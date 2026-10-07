@@ -3616,6 +3616,7 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
                     reference=None,
                     webhook_id=None,
                     id=500000000000000901,
+                    reply=AsyncMock(),
                 )
                 with patch.object(
                     prime_ai_service,
@@ -3629,7 +3630,7 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
                     "get_control_settings",
                     new=AsyncMock(return_value={"config": config}),
                 ), patch.object(
-                    self.bot,
+                    cog.bot,
                     "get_context",
                     new=AsyncMock(return_value=SimpleNamespace(valid=False)),
                 ):
