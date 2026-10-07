@@ -196,7 +196,10 @@ for _action_key, _action in ACTION_REGISTRY.items():
 
 ACTION_POLICY_DEFAULTS = {
     key: {
-        "enabled": False,
+        # Safe/read-like Discord operations are available to natural-language
+        # PRIME by default; HIGH/CRITICAL actions still require the server's
+        # real Discord permission and risk policy.
+        "enabled": item["risk"] not in {"HIGH", "CRITICAL"},
         "confirmation_required": bool(item["confirmation_required"]),
         "allowed_channels": [],
         "allowed_roles": [],
@@ -211,7 +214,7 @@ MODERATION_CATEGORIES = {
 
 
 DEFAULT_CONTROL_SETTINGS: dict[str, Any] = {
-    "policy_version": 3,
+    "policy_version": 4,
     "mode": "CHAT",
     "modes": {
         "chat": True,
@@ -242,7 +245,7 @@ DEFAULT_CONTROL_SETTINGS: dict[str, Any] = {
     "actions": ACTION_POLICY_DEFAULTS,
     "safety": {
         "enabled": True,
-        "dry_run": True,
+        "dry_run": False,
         "confirmation_enabled": False,
         "prompt_injection_protection": True,
         "mass_action_protection": True,
@@ -544,6 +547,11 @@ def normalize_control_settings(
             legacy_retention.pop("context_days", None)
             legacy_retention.pop("conversation_days", None)
             fixed_incoming["retention"] = legacy_retention
+    incoming_policy_version = incoming.get("policy_version", 1)
+    try:
+        incoming_policy_version = int(incoming_policy_version)
+    except (TypeError, ValueError):
+        incoming_policy_version = 1
     value = _merge_known(fixed_defaults, fixed_incoming)
     if legacy_provider_context is not None:
         if (
@@ -568,7 +576,15 @@ def normalize_control_settings(
             )
     for key in dynamic_fields:
         value[key] = incoming.get(key, DEFAULT_CONTROL_SETTINGS[key])
-    value["policy_version"] = 3
+    # Migrate the previous AI-control behavior to the direct PRIME operator
+    # defaults: safe actions are enabled and Dry Run is off. This is additive;
+    # HIGH/CRITICAL actions remain gated by live Discord permissions.
+    if incoming_policy_version < 4:
+        for action_key, metadata in ACTION_REGISTRY.items():
+            if metadata.get("risk") not in {"HIGH", "CRITICAL"}:
+                value["actions"][action_key]["enabled"] = True
+        value["safety"]["dry_run"] = False
+    value["policy_version"] = 4
     if value["mode"] not in AI_MODES:
         raise ValueError("invalid_mode")
     if not isinstance(value["modes"], dict) or any(not isinstance(v, bool) for v in value["modes"].values()):
