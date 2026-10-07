@@ -143,45 +143,83 @@ async def update_user_profile(
     preferences: dict | None = None,
 ) -> dict:
     await ensure_schema()
-    existing = await load_user_profile(guild_id, user_id)
-    merged_preferences = dict(existing.get("preferences") or {})
-    if isinstance(preferences, dict):
-        for key, value in preferences.items():
-            if value is not None:
-                merged_preferences[str(key)] = value
     now = _stamp()
-    count = int(existing.get("interaction_count") or 0) + 1
     safe_topic = _clean(topic, TOPIC_LIMIT)
-    async with database.connect() as db:
-        await db.execute(
-            """
-            INSERT INTO prime_ai_user_profiles
-                (guild_id,user_id,preferences_json,interaction_count,last_intent,
-                 last_topic,last_channel_id,last_seen_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(guild_id,user_id) DO UPDATE SET
-                preferences_json=excluded.preferences_json,
-                interaction_count=prime_ai_user_profiles.interaction_count + 1,
-                last_intent=excluded.last_intent,
-                last_topic=excluded.last_topic,
-                last_channel_id=excluded.last_channel_id,
-                last_seen_at=excluded.last_seen_at,
-                updated_at=excluded.updated_at
-            """,
-            (
-                int(guild_id),
-                int(user_id),
-                json.dumps(merged_preferences, ensure_ascii=False),
-                count,
-                _clean(intent, 80),
-                safe_topic,
-                int(channel_id) if channel_id is not None else existing.get("last_channel_id"),
-                now,
-                now,
-            ),
-        )
-        await db.commit()
-    return await load_user_profile(guild_id, user_id)
+    async with database.connect(aiosqlite.Row) as db:
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT preferences_json,interaction_count,last_intent,last_topic,"
+                "last_channel_id,last_seen_at,updated_at "
+                "FROM prime_ai_user_profiles WHERE guild_id=? AND user_id=?",
+                (int(guild_id), int(user_id)),
+            ) as cur:
+                row = await cur.fetchone()
+
+            if row is None:
+                existing_preferences = {}
+                existing_count = 0
+                existing_channel_id = None
+            else:
+                existing_preferences = _safe_json(row["preferences_json"], {}) or {}
+                if not isinstance(existing_preferences, dict):
+                    existing_preferences = {}
+                existing_count = int(row["interaction_count"] or 0)
+                existing_channel_id = row["last_channel_id"]
+
+            merged_preferences = dict(existing_preferences)
+            if isinstance(preferences, dict):
+                for key, value in preferences.items():
+                    if value is not None:
+                        merged_preferences[str(key)] = value
+
+            count = existing_count + 1
+            await db.execute(
+                """
+                INSERT INTO prime_ai_user_profiles
+                    (guild_id,user_id,preferences_json,interaction_count,last_intent,
+                     last_topic,last_channel_id,last_seen_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(guild_id,user_id) DO UPDATE SET
+                    preferences_json=excluded.preferences_json,
+                    interaction_count=prime_ai_user_profiles.interaction_count + 1,
+                    last_intent=excluded.last_intent,
+                    last_topic=excluded.last_topic,
+                    last_channel_id=excluded.last_channel_id,
+                    last_seen_at=excluded.last_seen_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    int(guild_id),
+                    int(user_id),
+                    json.dumps(merged_preferences, ensure_ascii=False),
+                    count,
+                    _clean(intent, 80),
+                    safe_topic,
+                    int(channel_id) if channel_id is not None else existing_channel_id,
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "user_id": str(user_id),
+        "preferences": merged_preferences,
+        "interaction_count": count,
+        "last_intent": _clean(intent, 80),
+        "last_topic": safe_topic,
+        "last_channel_id": (
+            str(channel_id)
+            if channel_id is not None
+            else (str(existing_channel_id) if existing_channel_id is not None else None)
+        ),
+        "last_seen_at": now,
+    }
 
 
 def looks_like_action(text: Any) -> bool:
