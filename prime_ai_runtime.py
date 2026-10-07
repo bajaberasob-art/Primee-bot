@@ -791,7 +791,16 @@ def _history_entry(
             speaker = "أنت"
         else:
             if author_id not in speaker_ids:
-                speaker_ids[author_id] = f"عضو {len(speaker_ids) + 1}"
+                display_name = str(
+                    getattr(author, "display_name", None)
+                    or getattr(author, "global_name", None)
+                    or getattr(author, "name", "")
+                ).strip()
+                speaker_ids[author_id] = (
+                    display_name[:50]
+                    if display_name
+                    else f"عضو {len(speaker_ids) + 1}"
+                )
             speaker = speaker_ids[author_id]
     content = service.sanitize_discord_text(getattr(item, "content", ""), 500)
     if not content:
@@ -867,6 +876,7 @@ async def build_context(
         except Exception:
             messages = []
     messages.reverse()
+    context["channel_history"] = list(messages)
     if config.get("context", {}).get("include_reply_context", True):
         reference = getattr(message, "reference", None)
         referenced = replied_message or (getattr(reference, "resolved", None) if reference else None)
@@ -936,6 +946,7 @@ async def build_interaction_context(
         except Exception:
             messages = []
     messages.reverse()
+    context["channel_history"] = list(messages)
     interaction_message = getattr(interaction, "message", None)
     if config.get("context", {}).get("include_reply_context", True) and interaction_message:
         reference = getattr(interaction_message, "reference", None)
