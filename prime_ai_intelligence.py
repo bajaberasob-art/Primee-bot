@@ -47,6 +47,9 @@ async def ensure_schema() -> None:
         if _SCHEMA_READY:
             return
         async with database.connect() as db:
+            # Durable state is limited to low-risk user profile metadata.
+            # Conversation text remains transient in memory to preserve the
+            # project's no-chat-text-persistence privacy contract.
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS prime_ai_user_profiles (
@@ -61,25 +64,6 @@ async def ensure_schema() -> None:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (guild_id, user_id)
                 )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS prime_ai_conversation_state (
-                    guild_id INTEGER NOT NULL,
-                    channel_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    messages_json TEXT NOT NULL DEFAULT '[]',
-                    expires_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (guild_id, channel_id, user_id)
-                )
-                """
-            )
-            await db.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_prime_ai_conversation_expiry
-                ON prime_ai_conversation_state (expires_at)
                 """
             )
             await db.commit()
@@ -206,41 +190,8 @@ async def load_persistent_conversation(
     *,
     max_messages: int = CONVERSATION_LIMIT,
 ) -> list[dict]:
-    await ensure_schema()
-    limit = max(2, min(int(max_messages), CONVERSATION_LIMIT))
-    now = _stamp()
-    async with database.connect(aiosqlite.Row) as db:
-        async with db.execute(
-            "SELECT messages_json,expires_at FROM prime_ai_conversation_state "
-            "WHERE guild_id=? AND channel_id=? AND user_id=?",
-            (int(guild_id), int(channel_id), int(user_id)),
-        ) as cur:
-            row = await cur.fetchone()
-        if row is None:
-            return []
-        expires_at = str(row["expires_at"] or "")
-        if expires_at <= now:
-            await db.execute(
-                "DELETE FROM prime_ai_conversation_state "
-                "WHERE guild_id=? AND channel_id=? AND user_id=?",
-                (int(guild_id), int(channel_id), int(user_id)),
-            )
-            await db.commit()
-            return []
-    payload = _safe_json(row["messages_json"], [])
-    if not isinstance(payload, list):
-        return []
-    output = []
-    for item in payload[-limit:]:
-        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
-            continue
-        output.append(
-            {
-                "role": item["role"],
-                "content": _clean(item.get("content"), 1800),
-            }
-        )
-    return output
+    """Compatibility shim: PRIME never persists raw conversation text."""
+    return []
 
 
 async def persist_conversation_turn(
@@ -249,8 +200,8 @@ async def persist_conversation_turn(
     user_id: int,
     conversation: list[dict],
 ) -> None:
-    """Compatibility no-op: PRIME chat text is intentionally not persisted."""
-    return
+    """Compatibility shim: raw chat persistence is intentionally disabled."""
+    return None
 
 
 def looks_like_action(text: Any) -> bool:
