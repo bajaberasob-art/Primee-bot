@@ -12,6 +12,7 @@ import discord
 import database
 import prime_ai_control
 import prime_ai_runtime
+import prime_ai_intelligence
 import prime_ai_service as ai
 import web_server as ws
 from cogs.ai_tools import (
