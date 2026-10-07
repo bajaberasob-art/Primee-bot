@@ -199,7 +199,7 @@ ACTION_POLICY_DEFAULTS = {
         # Safe/read-like Discord operations are available to natural-language
         # PRIME by default; HIGH/CRITICAL actions still require the server's
         # real Discord permission and risk policy.
-        "enabled": item["risk"] not in {"HIGH", "CRITICAL"},
+        "enabled": True,
         "confirmation_required": bool(item["confirmation_required"]),
         "allowed_channels": [],
         "allowed_roles": [],
@@ -581,8 +581,7 @@ def normalize_control_settings(
     # HIGH/CRITICAL actions remain gated by live Discord permissions.
     if incoming_policy_version < 4:
         for action_key, metadata in ACTION_REGISTRY.items():
-            if metadata.get("risk") not in {"HIGH", "CRITICAL"}:
-                value["actions"][action_key]["enabled"] = True
+            value["actions"][action_key]["enabled"] = True
         value["safety"]["dry_run"] = False
     value["policy_version"] = 4
     if value["mode"] not in AI_MODES:
