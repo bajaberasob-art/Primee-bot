@@ -180,7 +180,7 @@ async def update_user_profile(
             (
                 int(guild_id),
                 int(user_id),
-                json.dumps(merged_preferences, ensure_ascii=False)[:PROFILE_LIMIT],
+                json.dumps(merged_preferences, ensure_ascii=False),
                 count,
                 _clean(intent, 80),
                 safe_topic,
