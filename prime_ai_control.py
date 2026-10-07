@@ -63,6 +63,14 @@ def _default_rate(limit: int, window: int) -> dict:
     return {"limit": limit, "window_seconds": window}
 
 
+DANGEROUS_CONFIRMATION_TOOLS = {
+    "delete_message",
+    "delete_channel",
+    "delete_role",
+    "kick_member",
+    "ban_member",
+}
+
 # This is the authoritative inventory for Phase 4 actions. Runtime handlers,
 # policy checks, and Dashboard policy editors all key off these registered IDs.
 ACTION_REGISTRY: dict[str, dict[str, Any]] = {
@@ -185,10 +193,7 @@ for _action_key, _action in ACTION_REGISTRY.items():
     _action.update({
         "enabled": True,
         "enabled_by_default": True,
-        "confirmation_required": bool(
-            _action.get("confirmation_required")
-            or _action.get("risk") in {"HIGH", "CRITICAL"}
-        ),
+        "confirmation_required": _action_key in DANGEROUS_CONFIRMATION_TOOLS,
         "prime_permission": "access.minimum_permission",
         "audit_required": True,
         "dashboard_config": f"actions.{_action_key}",
@@ -200,7 +205,7 @@ ACTION_POLICY_DEFAULTS = {
         # HIGH/CRITICAL actions still require real Discord permissions plus
         # their risk-based confirmation gate.
         "enabled": True,
-        "confirmation_required": bool(item["confirmation_required"]),
+        "confirmation_required": key in DANGEROUS_CONFIRMATION_TOOLS,
         "allowed_channels": [],
         "allowed_roles": [],
         "minimum_role_id": "",
@@ -279,6 +284,7 @@ DEFAULT_CONTROL_SETTINGS: dict[str, Any] = {
         "name": "Google Gemini",
         "model": "gemini-3.8-flash",
         "temperature": 0.7,
+        "thinking_level": "medium",
         "max_tokens": 1200,
         "timeout_seconds": 30,
         "retry_count": 2,
@@ -618,10 +624,7 @@ def normalize_control_settings(
             raise ValueError("invalid_action_policy")
         # Confirmation policy is fixed by registered action risk: safe actions
         # do not ask, and high-risk actions cannot be disabled by a stale draft.
-        policy["confirmation_required"] = bool(
-            metadata.get("confirmation_required")
-            or metadata.get("risk") in {"HIGH", "CRITICAL"}
-        )
+        policy["confirmation_required"] = action_id in DANGEROUS_CONFIRMATION_TOOLS
         for key in ("allowed_channels", "allowed_roles"):
             policy[key] = _ids(policy.get(key), f"{action_id}_{key}")
         minimum_role_id = str(policy.get("minimum_role_id", "") or "")
@@ -668,6 +671,10 @@ def normalize_control_settings(
         raise ValueError("invalid_personality_tone")
     if not isinstance(personality["arabic_dialect"], str) or len(personality["arabic_dialect"]) > 40:
         raise ValueError("invalid_arabic_dialect")
+    thinking_level = str(value["provider"].get("thinking_level", "medium")).lower()
+    if thinking_level not in {"low", "medium", "high"}:
+        raise ValueError("invalid_thinking_level")
+    value["provider"]["thinking_level"] = thinking_level
     for key in ("greeting_style", "reply_style"):
         if not isinstance(personality[key], str) or len(personality[key]) > 80:
             raise ValueError(f"invalid_personality_{key}")
