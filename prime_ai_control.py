@@ -179,12 +179,12 @@ ACTION_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 # Keep the static registry complete and expose runtime policy separately in
-# DEFAULT_CONTROL_SETTINGS.  "enabled" here describes the safe default only;
-# high-risk actions retain their mandatory confirmation policy.
+# DEFAULT_CONTROL_SETTINGS. Actions are available by default; HIGH/CRITICAL
+# actions retain their mandatory confirmation policy.
 for _action_key, _action in ACTION_REGISTRY.items():
     _action.update({
-        "enabled": False,
-        "enabled_by_default": False,
+        "enabled": True,
+        "enabled_by_default": True,
         "confirmation_required": bool(
             _action.get("confirmation_required")
             or _action.get("risk") in {"HIGH", "CRITICAL"}
