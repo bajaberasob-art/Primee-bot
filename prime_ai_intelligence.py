@@ -43,41 +43,41 @@ async def ensure_schema() -> None:
         if _SCHEMA_READY:
             return
         async with database.connect() as db:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS prime_ai_user_profiles (
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                preferences_json TEXT NOT NULL DEFAULT '{}',
-                interaction_count INTEGER NOT NULL DEFAULT 0,
-                last_intent TEXT NOT NULL DEFAULT '',
-                last_topic TEXT NOT NULL DEFAULT '',
-                last_channel_id INTEGER,
-                last_seen_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (guild_id, user_id)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prime_ai_user_profiles (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    preferences_json TEXT NOT NULL DEFAULT '{}',
+                    interaction_count INTEGER NOT NULL DEFAULT 0,
+                    last_intent TEXT NOT NULL DEFAULT '',
+                    last_topic TEXT NOT NULL DEFAULT '',
+                    last_channel_id INTEGER,
+                    last_seen_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, user_id)
+                )
+                """
             )
-            """
-        )
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS prime_ai_conversation_state (
-                guild_id INTEGER NOT NULL,
-                channel_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                messages_json TEXT NOT NULL DEFAULT '[]',
-                expires_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (guild_id, channel_id, user_id)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prime_ai_conversation_state (
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    messages_json TEXT NOT NULL DEFAULT '[]',
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, channel_id, user_id)
+                )
+                """
             )
-            """
-        )
-        await db.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_prime_ai_conversation_expiry
-            ON prime_ai_conversation_state (expires_at)
-            """
-        )
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_prime_ai_conversation_expiry
+                ON prime_ai_conversation_state (expires_at)
+                """
+            )
             await db.commit()
         _SCHEMA_READY = True
 
