@@ -363,9 +363,10 @@ async def infer_natural_action(
     detected = runtime.detect_skill_request(prompt)
     if detected and detected.get("intent") == "SERVER_ACTION":
         return None
-    if not looks_like_action(prompt):
-        return None
-
+    # Addressed PRIME messages are all eligible for semantic routing. The model
+    # decides CHAT vs ACTION vs CLARIFY; local regex remains a fast path and the
+    # executor remains the final authority. This fixes indirect requests such as
+    # "خلها مثل قبل" that do not contain an action verb.
     profile = await load_user_profile(int(guild.id), int(member.id))
     enabled_actions = [
         {
