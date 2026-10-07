@@ -151,9 +151,7 @@ async def update_user_profile(
                 merged_preferences[str(key)] = value
     now = _stamp()
     count = int(existing.get("interaction_count") or 0) + 1
-    safe_topic = str(topic or "").upper()
-    if safe_topic not in PROFILE_TOPIC_VALUES:
-        safe_topic = ""
+    safe_topic = _clean(topic, TOPIC_LIMIT)
     async with database.connect() as db:
         await db.execute(
             """
