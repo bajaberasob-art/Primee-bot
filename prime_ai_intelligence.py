@@ -293,6 +293,31 @@ def _extract_topic(text: Any) -> str:
     return value[:TOPIC_LIMIT]
 
 
+def extract_preference_signals(text: Any) -> dict:
+    """Persist only explicit, low-risk presentation preferences for the current user."""
+    value = _clean(text, 500).casefold()
+    preferences: dict[str, Any] = {}
+    if re.search(r"(?:مختصر|باختصار|short|brief|concise)", value):
+        preferences["response_length"] = "short"
+    elif re.search(r"(?:مفصل|بالتفصيل|مطول|detailed|in depth)", value):
+        preferences["response_length"] = "long"
+    if re.search(r"(?:بدون\s+إيموجي|بدون\s+ايموجي|لا\s+تستخدم\s+إيموجي|no emoji)", value):
+        preferences["emoji_usage"] = 0
+    elif re.search(r"(?:استخدم\s+إيموجي|حط\s+إيموجي|emoji)", value):
+        preferences["emoji_usage"] = 35
+    if re.search(r"(?:بالإنجليزية|بالانجليزية|بالإنجليزي|in english|reply in english)", value):
+        preferences["language"] = "English"
+    elif re.search(r"(?:بالعربية|بالعربي|باللغة العربية|in arabic|reply in arabic)", value):
+        preferences["language"] = "Arabic"
+    dialect = re.search(
+        r"(?:لهجة|اللهجة|dialect)\s*[:：-]?\s*([\u0600-\u06ffA-Za-z]{2,30})",
+        value,
+    )
+    if dialect:
+        preferences["arabic_dialect"] = dialect.group(1)[:40]
+    return preferences
+
+
 def response_repeats_recent(
     answer: str,
     conversation: list[dict] | None,
