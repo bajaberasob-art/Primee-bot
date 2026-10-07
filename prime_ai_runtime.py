@@ -390,7 +390,7 @@ class ConversationStateStore:
     def __init__(
         self,
         *,
-        ttl_seconds: int = 900,
+        ttl_seconds: int = 21600,
         max_sessions: int = 2000,
         max_messages: int = 30,
     ):
@@ -1581,10 +1581,15 @@ async def plan_action(
     *,
     context: list[dict] | None = None,
     config: dict | None = None,
+    forced_tools: list[str] | None = None,
 ) -> dict:
     config = config or control.DEFAULT_CONTROL_SETTINGS
     settings = config.get("actions", {})
-    requested_tools = [
+    forced_tools = [
+        str(tool) for tool in (forced_tools or [])
+        if str(tool) in ACTION_TOOL_SCHEMAS
+    ]
+    requested_tools = forced_tools or [
         tool for tool in ACTION_TOOL_SCHEMAS
         if _action_pattern_matches(tool, prompt)
     ]
@@ -1690,7 +1695,7 @@ async def plan_action(
     max_steps = int(config.get("safety", {}).get("max_action_count", 3))
     if not isinstance(raw_steps, list) or len(raw_steps) > max_steps:
         raise InvalidToolPlan("invalid_step_count")
-    if raw_steps and not any(
+    if raw_steps and not forced_tools and not any(
         _action_pattern_matches(action, prompt) for action in _ACTION_REQUEST_PATTERNS
     ):
         raise InvalidToolPlan("request_does_not_name_registered_action")
@@ -1704,7 +1709,10 @@ async def plan_action(
         "category_id": "channel", "message_id": "message",
     }
     for step in steps:
-        if not _action_pattern_matches(step["tool"], prompt):
+        if forced_tools:
+            if step["tool"] not in forced_tools:
+                raise InvalidToolPlan("action_not_selected_by_intent_router")
+        elif not _action_pattern_matches(step["tool"], prompt):
             raise InvalidToolPlan("action_not_explicitly_requested")
         used_kinds = {
             id_kinds[key]
