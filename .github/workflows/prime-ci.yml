@@ -29,7 +29,9 @@ jobs:
           node-version: "20"
 
       - name: Check dashboard JavaScript syntax
-        run: node --check dashboard/app.js
+        run: |
+          node --check dashboard/app.js
+          node --check dashboard/ai-control.js
 
       - name: Install dependencies
         run: pip install -r requirements.txt
