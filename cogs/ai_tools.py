@@ -710,18 +710,6 @@ class AITools(commands.Cog):
                 if effective_history_limit
                 else []
             )
-            if not conversation and effective_history_limit:
-                try:
-                    conversation = await prime_ai_intelligence.load_persistent_conversation(
-                        guild.id,
-                        channel_id,
-                        actor.id,
-                        max_messages=effective_history_limit,
-                    )
-                except Exception:
-                    LOGGER.exception("[AI] Could not restore persistent PRIME context.")
-                    conversation = []
-
             answer = await generate(conversation)
 
             if prime_ai_intelligence.response_repeats_recent(answer, conversation):
@@ -747,23 +735,18 @@ class AITools(commands.Cog):
                 max_messages=effective_history_limit,
             )
             try:
-                persisted = store.get(key)[-effective_history_limit:]
-                await prime_ai_intelligence.persist_conversation_turn(
-                    guild.id,
-                    channel_id,
-                    actor.id,
-                    persisted,
-                )
+                # Keep the durable profile privacy-safe: persist only explicit,
+                # low-risk preferences and a compact intent label, never raw chat text.
                 await prime_ai_intelligence.update_user_profile(
                     guild.id,
                     actor.id,
                     channel_id=channel_id,
                     intent=str((context or {}).get("intent") or ""),
-                    topic=question,
+                    topic=f"intent:{str((context or {}).get('intent') or 'CHAT')[:40]}",
                     preferences=prime_ai_intelligence.extract_preference_signals(question),
                 )
             except Exception:
-                LOGGER.exception("[AI] Could not persist PRIME user context.")
+                LOGGER.exception("[AI] Could not persist PRIME user profile.")
             return answer
 
     @staticmethod
@@ -787,17 +770,12 @@ class AITools(commands.Cog):
 
         async def persist():
             try:
-                await prime_ai_intelligence.persist_conversation_turn(
-                    guild.id,
-                    channel_id,
-                    actor.id,
-                    prime_ai_runtime.CONVERSATION_STATE.get(key),
-                )
                 await prime_ai_intelligence.update_user_profile(
                     guild.id,
                     actor.id,
                     channel_id=channel_id,
-                    topic=user_text,
+                    topic="intent:SERVER_ACTION",
+                    intent="SERVER_ACTION",
                     preferences=prime_ai_intelligence.extract_preference_signals(user_text),
                 )
             except Exception:
