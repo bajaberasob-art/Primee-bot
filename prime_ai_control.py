@@ -196,9 +196,9 @@ for _action_key, _action in ACTION_REGISTRY.items():
 
 ACTION_POLICY_DEFAULTS = {
     key: {
-        # Safe/read-like Discord operations are available to natural-language
-        # PRIME by default; HIGH/CRITICAL actions still require the server's
-        # real Discord permission and risk policy.
+        # PRIME actions are available to natural-language requests by default;
+        # HIGH/CRITICAL actions still require real Discord permissions plus
+        # their risk-based confirmation gate.
         "enabled": True,
         "confirmation_required": bool(item["confirmation_required"]),
         "allowed_channels": [],
