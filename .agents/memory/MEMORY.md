@@ -1,0 +1,2 @@
+- [Git review branch](git-review-branch.md) — Keep GitHub edits on a review branch; leave `main` untouched unless the user explicitly asks.
+- [Python test setup](python-test-runtime.md) — If base Nix Python lacks pip or project packages, use a supported Python Tools module and Replit package management.

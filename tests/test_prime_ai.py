@@ -1340,7 +1340,7 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(profile["last_intent"], "CHAT")
-        self.assertEqual(profile["last_topic"], "تصميم هوية PRIME")
+        self.assertEqual(profile["last_topic"], "design")
 
     async def test_transient_provider_503_retries_then_succeeds(self):
         session = FakeProviderSession(statuses=[503, 200])
@@ -3276,6 +3276,7 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
         guild.me = bot_member
         actor = SimpleNamespace(
             id=100000000000000901,
+            bot=False,
             roles=[],
             top_role=ROLES[3],
             guild_permissions=SimpleNamespace(administrator=True),
@@ -3653,15 +3654,15 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
                     guild=guild,
                     author=actor,
                     channel=channel,
-                    content="برايم خل الروم باسم الدعم",
-                    mentions=[],
+                    content=f"<@{bot.user.id}> خل الروم باسم الدعم",
+                    mentions=[bot.user],
                     reference=None,
                     webhook_id=None,
                     id=500000000000000901,
                     reply=AsyncMock(),
                 )
                 with patch.object(
-                    prime_ai_service,
+                    ai,
                     "get_settings",
                     new=AsyncMock(return_value={
                         "enabled": True,
@@ -3675,6 +3676,7 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
                     cog.bot,
                     "get_context",
                     new=AsyncMock(return_value=SimpleNamespace(valid=False)),
+                    create=True,
                 ):
                     await cog.on_message(message)
 

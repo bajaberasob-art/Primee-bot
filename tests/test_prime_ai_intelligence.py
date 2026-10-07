@@ -73,6 +73,16 @@ class TestPrimeAIIntelligence(unittest.TestCase):
             },
         )
 
+    def test_topic_storage_uses_allowlisted_categories_not_chat_text(self):
+        self.assertEqual(
+            prime_ai_intelligence._extract_topic("تصميم هوية PRIME"),
+            "design",
+        )
+        self.assertEqual(
+            prime_ai_intelligence._extract_topic("بريدي وكلمة مروري السرية"),
+            "",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

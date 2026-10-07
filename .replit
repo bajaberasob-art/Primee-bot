@@ -1,0 +1,21 @@
+modules = ["python-3.11", "nodejs-24"]
+
+[[ports]]
+localPort = 1000
+externalPort = 3000
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 8099
+externalPort = 8099
+
+[nix]
+channel = "stable-25_05"
+packages = ["freetype", "lcms2", "libimagequant", "libjpeg", "libsodium", "libtiff", "libwebp", "libxcrypt", "openjpeg", "tcl", "tk", "zlib"]

@@ -1069,8 +1069,29 @@ def _build_system_prompt(
         personality.update(
             {key: value for key, value in channel_persona.items() if key != "enabled"}
         )
-    user_preferences = _approved_user_preferences(memories)
     user_profile = dict((context or {}).get("user_profile") or {})
+    user_preferences = _approved_user_preferences(memories)
+    profile_preferences = user_profile.get("preferences", {})
+    if isinstance(profile_preferences, dict):
+        allowed_values = {
+            "response_length": {"short", "long"},
+            "emoji_usage": {0, 35},
+            "language": {"English", "Arabic"},
+        }
+        for key, allowed in allowed_values.items():
+            value = profile_preferences.get(key)
+            if (
+                not isinstance(value, bool)
+                and isinstance(value, (str, int))
+                and value in allowed
+            ):
+                user_preferences[key] = value
+        dialect = profile_preferences.get("arabic_dialect")
+        if (
+            isinstance(dialect, str)
+            and re.fullmatch(r"[\u0600-\u06ffA-Za-z -]{2,40}", dialect)
+        ):
+            user_preferences["arabic_dialect"] = dialect
     persona_behavior = ""
     try:
         from prime_ai_intelligence import behavior_contract

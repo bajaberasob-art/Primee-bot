@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -21,7 +22,7 @@ PROFILE_TOPIC_VALUES = {
     "CHAT", "QUESTION", "ADMIN_COMMAND", "SERVER_ACTION",
     "HELP", "SUMMARY", "UNKNOWN", "ROUTING",
 }
-_SCHEMA_READY_DB: str | None = None
+_SCHEMA_READY_DB: tuple[str, int, int] | None = None
 _SCHEMA_LOCK = asyncio.Lock()
 
 _ACTIONISH = re.compile(
@@ -30,7 +31,7 @@ _ACTIONISH = re.compile(
     r"kick|ban|unban|timeout|mute|give|take|add|remove|edit)\b|"
     r"(?<![\u0600-\u06ffA-Za-z])"
     r"(?:بدل|عدل|احذف|حذف|امسح|أنشئ|انشئ|سوي|سو|خل|خلي|خله|خليها|"
-    r"سم|سمي|سمها|قفل|افتح|طرد|احظر|فك الحظر|اسكت|عط|اعط|شيل|حط|غيّر|غيرها|غيره|غيرهم)"
+    r"سم|سمي|سمها|قفل|افتح|طرد|احظر|فك الحظر|اسكت|عط|اعط|شيل|حط|غيّر|غير|غيرها|غيره|غيرهم)"
     r"(?![\u0600-\u06ffA-Za-z])"
     r")",
     re.I,
@@ -39,15 +40,25 @@ _ACTIONISH = re.compile(
 _INTENT_JSON_RE = re.compile(r"\{.*?\}", re.S)
 
 
+def _database_identity(path: str) -> tuple[str, int, int] | None:
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return os.path.abspath(path), stat.st_dev, stat.st_ino
+
+
 async def ensure_schema() -> None:
     """Additive AI-only schema. Never alters or deletes existing project tables."""
     global _SCHEMA_READY_DB
     current_db = str(database.DB_NAME)
-    if _SCHEMA_READY_DB == current_db:
+    identity = _database_identity(current_db)
+    if identity is not None and _SCHEMA_READY_DB == identity:
         return
     async with _SCHEMA_LOCK:
         current_db = str(database.DB_NAME)
-        if _SCHEMA_READY_DB == current_db:
+        identity = _database_identity(current_db)
+        if identity is not None and _SCHEMA_READY_DB == identity:
             return
         async with database.connect() as db:
             # Durable state is limited to low-risk user profile metadata.
@@ -70,7 +81,7 @@ async def ensure_schema() -> None:
                 """
             )
             await db.commit()
-        _SCHEMA_READY_DB = current_db
+        _SCHEMA_READY_DB = _database_identity(current_db)
 
 
 def _now() -> datetime:
@@ -127,7 +138,9 @@ async def load_user_profile(guild_id: int, user_id: int) -> dict:
         "preferences": _safe_json(row["preferences_json"], {}) or {},
         "interaction_count": int(row["interaction_count"] or 0),
         "last_intent": str(row["last_intent"] or ""),
-        "last_topic": str(row["last_topic"] or ""),
+        # Older rows may contain a topic captured before topic labels were
+        # restricted to a fixed, privacy-safe vocabulary.
+        "last_topic": _extract_topic(row["last_topic"] or ""),
         "last_channel_id": str(row["last_channel_id"]) if row["last_channel_id"] is not None else None,
         "last_seen_at": str(row["last_seen_at"] or ""),
     }
@@ -144,7 +157,7 @@ async def update_user_profile(
 ) -> dict:
     await ensure_schema()
     now = _stamp()
-    safe_topic = _clean(topic, TOPIC_LIMIT)
+    safe_topic = _extract_topic(topic)
     async with database.connect(aiosqlite.Row) as db:
         try:
             await db.execute("BEGIN IMMEDIATE")
@@ -250,9 +263,46 @@ def should_probe_semantic_action(
 
 
 def _extract_topic(text: Any) -> str:
-    value = re.sub(r"<@!?\d+>", " ", str(text or ""))
-    value = re.sub(r"\s+", " ", value).strip()
-    return value[:TOPIC_LIMIT]
+    """Return an allowlisted topic label; never persist a quote from user chat."""
+    value = _clean(text, 500).casefold()
+    categories = (
+        (
+            r"(?:design|brand|logo|ui|تصميم|هوية|واجهة|شعار|ألوان|الوان)",
+            "design",
+        ),
+        (
+            r"(?:moderation|timeout|kick|ban|mute|طرد|حظر|اسكات|إسكات|مخالفة)",
+            "discord moderation",
+        ),
+        (
+            r"(?:role|permission|رتب|رتبة|صلاحية|صلاحيات)",
+            "discord roles",
+        ),
+        (
+            r"(?:channel|قناة|قنوات|روم|قفل القناة|فتح القناة)",
+            "discord channels",
+        ),
+        (
+            r"(?:tournament|giveaway|gaming|game|بطولة|مسابقة|العاب|ألعاب|لعبة)",
+            "games and events",
+        ),
+        (
+            r"(?:subscription|اشتراك|اشتراكات|اقتصاد|رصيد|عملات|coins)",
+            "subscriptions and economy",
+        ),
+        (
+            r"(?:dashboard|لوحة التحكم|settings|إعدادات|اعدادات)",
+            "dashboard settings",
+        ),
+        (
+            r"(?:prime|برايم|gemini|ذكاء اصطناعي|ai|بوت)",
+            "PRIME AI",
+        ),
+    )
+    for pattern, label in categories:
+        if re.search(pattern, value, re.I):
+            return label
+    return ""
 
 
 def extract_preference_signals(text: Any) -> dict:
@@ -285,17 +335,23 @@ def response_repeats_recent(
     conversation: list[dict] | None,
 ) -> bool:
     """Cheap deterministic semantic-ish repetition guard; no embeddings or extra API call."""
-    answer_tokens = _tokenize(answer)
-    if len(answer_tokens) < 8:
+    normalized_answer = re.sub(r"\s+", " ", str(answer or "")).strip().casefold()
+    if not normalized_answer:
         return False
+    answer_tokens = _tokenize(answer)
     recent = [
         item.get("content", "")
         for item in (conversation or [])[-6:]
         if isinstance(item, dict) and item.get("role") == "assistant"
     ]
     for previous in recent:
+        normalized_previous = re.sub(
+            r"\s+", " ", str(previous or "")
+        ).strip().casefold()
+        if normalized_answer == normalized_previous:
+            return True
         previous_tokens = _tokenize(previous)
-        if len(previous_tokens) < 8:
+        if len(answer_tokens) < 8 or len(previous_tokens) < 8:
             continue
         overlap = len(answer_tokens & previous_tokens) / max(
             1, len(answer_tokens | previous_tokens)

@@ -53,7 +53,10 @@ class Chan(discord.TextChannel):
         return self._cat
 
 
-CATS = {"عام": SimpleNamespace(name="📢 العام", position=0), "إدارة": SimpleNamespace(name="🛡️ الإدارة", position=1)}
+CATS = {
+    "عام": SimpleNamespace(id=300000000000000101, name="📢 العام", position=0),
+    "إدارة": SimpleNamespace(id=300000000000000102, name="🛡️ الإدارة", position=1),
+}
 CHANNELS = [
     Chan(300000000000000001, "الترحيب", 0, CATS["عام"]), Chan(300000000000000002, "الدردشة", 1, CATS["عام"]),
     Chan(300000000000000003, "سجل-الحماية", 0, CATS["إدارة"]), Chan(300000000000000004, "قرارات", 1, CATS["إدارة"]),
