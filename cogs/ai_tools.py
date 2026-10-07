@@ -760,6 +760,7 @@ class AITools(commands.Cog):
                     channel_id=channel_id,
                     intent=str((context or {}).get("intent") or ""),
                     topic=question,
+                    preferences=prime_ai_intelligence.extract_preference_signals(question),
                 )
             except Exception:
                 LOGGER.exception("[AI] Could not persist PRIME user context.")
@@ -797,6 +798,7 @@ class AITools(commands.Cog):
                     actor.id,
                     channel_id=channel_id,
                     topic=user_text,
+                    preferences=prime_ai_intelligence.extract_preference_signals(user_text),
                 )
             except Exception:
                 LOGGER.exception("[AI] Could not persist PRIME action context.")
