@@ -408,7 +408,7 @@ async def infer_natural_action(
             "user": {"role_ids": [str(role.id) for role in getattr(member, "roles", ())]},
         },
         role_ids=[role.id for role in getattr(member, "roles", ())],
-        mode="ACTION",
+        mode="CHAT",
         internal=True,
         include_memories=False,
     )
