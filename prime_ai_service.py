@@ -1283,6 +1283,23 @@ def _model_visible_context(context: dict | None, mode: str) -> dict:
         }
         if safe_user["display_name"] or safe_user["username"] or safe_user["role_names"]:
             visible["current_user"] = safe_user
+    channel_history = value.get("channel_history")
+    if isinstance(channel_history, list):
+        visible_history = []
+        for item in channel_history[-12:]:
+            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+                continue
+            visible_history.append({
+                "speaker": str(
+                    item.get("content", "").split("]:", 1)[0].lstrip("[")
+                    or ("PRIME AI" if item.get("role") == "assistant" else "عضو")
+                )[:60],
+                "role": item.get("role"),
+                "content": sanitize_discord_text(item.get("content", ""), 700),
+            })
+        if visible_history:
+            visible["channel_history"] = visible_history
+
     replied_message = value.get("replied_message")
     if isinstance(replied_message, dict):
         visible["replied_message"] = {
