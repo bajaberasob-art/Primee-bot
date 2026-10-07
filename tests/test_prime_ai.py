@@ -2758,10 +2758,11 @@ class PrimeAIApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(action["enabled"] is True for action in action_registry))
         self.assertTrue(all(
             action["confirmation_required"]
-            == (action["risk"] in {"HIGH", "CRITICAL"})
+            == (action["id"] in prime_ai_control.DANGEROUS_CONFIRMATION_TOOLS)
             for action in action_registry
         ))
         self.assertTrue(all(action["audit_required"] for action in action_registry))
+        self.assertIn("thinking_level", initial["control"]["config"]["provider"])
         self.assertTrue(all(action["prime_permission"] for action in action_registry))
         self.assertTrue(all("handler" not in action for action in action_registry))
         public_skills = initial["skills"]
