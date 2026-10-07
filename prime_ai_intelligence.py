@@ -190,7 +190,7 @@ async def load_persistent_conversation(
     *,
     max_messages: int = CONVERSATION_LIMIT,
 ) -> list[dict]:
-    """Compatibility shim: PRIME never persists raw conversation text."""
+    """Compatibility API only; chat content is never restored from durable storage."""
     return []
 
 
