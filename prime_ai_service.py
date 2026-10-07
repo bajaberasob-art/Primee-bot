@@ -1123,8 +1123,7 @@ def _build_system_prompt(
                 separators=(",", ":"),
             )[:2200]
         )
-    preference_lines.append("سلوك PRIME المطلوب:
-" + persona_behavior)
+    preference_lines.append("سلوك PRIME المطلوب:\\n" + persona_behavior)
     if user_preferences:
         if "response_length" in user_preferences:
             preference_lines.append(
