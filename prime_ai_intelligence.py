@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import aiosqlite
@@ -17,7 +17,6 @@ SCHEMA_VERSION = 1
 PROFILE_LIMIT = 2400
 TOPIC_LIMIT = 80
 CONVERSATION_LIMIT = 12
-CONVERSATION_RETENTION_HOURS = 216
 PROFILE_TOPIC_VALUES = {
     "CHAT", "QUESTION", "ADMIN_COMMAND", "SERVER_ACTION",
     "HELP", "SUMMARY", "UNKNOWN", "ROUTING",
@@ -181,27 +180,6 @@ async def update_user_profile(
         )
         await db.commit()
     return await load_user_profile(guild_id, user_id)
-
-
-async def load_persistent_conversation(
-    guild_id: int,
-    channel_id: int,
-    user_id: int,
-    *,
-    max_messages: int = CONVERSATION_LIMIT,
-) -> list[dict]:
-    """Compatibility API only; chat content is never restored from durable storage."""
-    return []
-
-
-async def persist_conversation_turn(
-    guild_id: int,
-    channel_id: int,
-    user_id: int,
-    conversation: list[dict],
-) -> None:
-    """Compatibility shim: raw chat persistence is intentionally disabled."""
-    return None
 
 
 def looks_like_action(text: Any) -> bool:
