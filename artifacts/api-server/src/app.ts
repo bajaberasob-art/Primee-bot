@@ -82,8 +82,12 @@ app.use(cors());
 
 // The public Replit domain is served by this API service. Keep the bot's
 // aiohttp dashboard on its own port, but expose it through the same domain.
-app.get("/", (_req, res) => {
-  res.redirect(302, "/dashboard/");
+app.get("/", proxyDashboard);
+app.get("/dashboard", (_req, res) => {
+  res.redirect(302, "/");
+});
+app.get("/dashboard/", (_req, res) => {
+  res.redirect(302, "/");
 });
 app.use("/dashboard", proxyDashboard);
 app.get("/api", (_req, res) => {
@@ -99,5 +103,21 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
+
+// Vite serves the dashboard with base "/", even when its HTML is reached
+// through /dashboard/. Forward root-level assets (/@vite, /src, /assets, etc.)
+// to the dashboard while leaving API and public leaderboard routes untouched.
+app.use((req, res, next) => {
+  if (
+    req.path === "/api" ||
+    req.path.startsWith("/api/") ||
+    req.path === "/lb" ||
+    req.path.startsWith("/lb/")
+  ) {
+    next();
+    return;
+  }
+  proxyDashboard(req, res);
+});
 
 export default app;
