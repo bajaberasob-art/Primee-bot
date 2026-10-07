@@ -771,8 +771,8 @@
         ["administrator", "مسؤول"], ["owner", "مالك البوت"],
       ].map(([value, label]) => ({ value, label }));
       const actionSection = controlDisclosure(
-        "الإجراءات المحمية والأمان",
-        "تُنفّذ الإجراءات المفعّلة عند سماح سياسة PRIME وصلاحيات Discord الحية وحدّ الرتبة. تتطلب الإجراءات الخطرة أو المدمرة والخطط متعددة الخطوات تأكيداً؛ أما الإجراء العادي فلا يتطلب تأكيداً إضافياً.",
+        "الإجراءات والأمان",
+        "PRIME يفهم الطلبات الطبيعية وينفذ الإجراء مباشرة بعد فحص الصلاحيات الحية والحد الأدنى للرتبة. التأكيد محصور في الإجراءات عالية الخطورة أو الحرجة؛ لا يوجد شرط /ask_ai ولا تأكيد إضافي للخطوات العادية.",
         false,
       );
       const safety = cfg.safety || {};
@@ -915,7 +915,7 @@
         [
           `صلاحيات Discord: ${discordPermissions}`,
           `قيد الوصول في PRIME: ${primePermissionLabel} · الحد الأدنى للرتبة: ${policy.minimum_role_id ? minimumRoleChoices.find((role) => String(role.value) === String(policy.minimum_role_id))?.label || "رتبة محددة" : "لا يوجد"}`,
-          `التنفيذ: ${entry.confirmation_required ? "بعد تأكيد صاحب الطلب ثم إعادة فحص الصلاحيات" : "مباشر بعد فحوص السياسة والصلاحيات"} · الخطوات المتعددة تتطلب تأكيداً دائماً`,
+          `التنفيذ: ${entry.confirmation_required ? "بعد تأكيد صاحب الطلب ثم إعادة فحص الصلاحيات" : "مباشر بعد فحوص السياسة والصلاحيات"}`,
           `القنوات: ${selectedChannelNames.length ? selectedChannelNames.join("، ") : "لا توجد قيود إضافية على هذا الإجراء"}`,
           `الرتب: ${selectedRoleNames.length ? selectedRoleNames.join("، ") : "لا توجد قيود إضافية على هذا الإجراء"}`,
           `حد الإجراءات: ${actionRate.limit || "—"} لكل ${actionRate.window_seconds || "—"} ثانية`,
@@ -930,7 +930,7 @@
       actionSection.content.append(el(
         "p",
         "prime-ai-help",
-        "لا يوجد تأكيد ثانٍ لأي إجراء. لا يكفي أن يفهم النموذج الطلب: يجب أن يكون صاحب الطلب مالك الخادم أو Administrator، وأن تسمح صلاحيات Discord الفعلية وتسلسل رتبة البوت والقيود والقنوات بالتنفيذ. الطلب الملتبس يتوقف ويطلب توضيحاً.",
+        "PRIME لا يمنح أي صلاحية بنفسه. تُفحص صلاحيات Discord الحقيقية، وتُفحص رتبة المستخدم والـbot وتسلسل الرتب والقيود لكل طلب. الطلب الملتبس فقط يتوقف ويطلب توضيحاً؛ الإجراءات الخطرة تبقى خلف تأكيد واحد فقط.",
       ));
       addControlSection("actions", actionSection);
 
