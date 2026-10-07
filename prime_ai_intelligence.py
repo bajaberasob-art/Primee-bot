@@ -15,9 +15,13 @@ import database
 
 SCHEMA_VERSION = 1
 PROFILE_LIMIT = 2400
-TOPIC_LIMIT = 180
+TOPIC_LIMIT = 80
 CONVERSATION_LIMIT = 12
-CONVERSATION_RETENTION_HOURS = 24
+CONVERSATION_RETENTION_HOURS = 216
+PROFILE_TOPIC_VALUES = {
+    "CHAT", "QUESTION", "ADMIN_COMMAND", "SERVER_ACTION",
+    "HELP", "SUMMARY", "UNKNOWN", "ROUTING",
+}
 _SCHEMA_READY = False
 _SCHEMA_LOCK = asyncio.Lock()
 
@@ -160,7 +164,9 @@ async def update_user_profile(
                 merged_preferences[str(key)] = value
     now = _stamp()
     count = int(existing.get("interaction_count") or 0) + 1
-    safe_topic = _clean(topic, TOPIC_LIMIT)
+    safe_topic = str(topic or "").upper()
+    if safe_topic not in PROFILE_TOPIC_VALUES:
+        safe_topic = ""
     async with database.connect() as db:
         await db.execute(
             """
@@ -243,44 +249,8 @@ async def persist_conversation_turn(
     user_id: int,
     conversation: list[dict],
 ) -> None:
-    await ensure_schema()
-    safe = []
-    for item in conversation[-CONVERSATION_LIMIT:]:
-        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
-            continue
-        content = _clean(item.get("content"), 1800)
-        if not content:
-            continue
-        safe.append({"role": item["role"], "content": content})
-    if not safe:
-        return
-    now = _now()
-    expires = _stamp(now + timedelta(hours=CONVERSATION_RETENTION_HOURS))
-    async with database.connect() as db:
-        await db.execute(
-            """
-            INSERT INTO prime_ai_conversation_state
-                (guild_id,channel_id,user_id,messages_json,expires_at,updated_at)
-            VALUES (?,?,?,?,?,?)
-            ON CONFLICT(guild_id,channel_id,user_id) DO UPDATE SET
-                messages_json=excluded.messages_json,
-                expires_at=excluded.expires_at,
-                updated_at=excluded.updated_at
-            """,
-            (
-                int(guild_id),
-                int(channel_id),
-                int(user_id),
-                json.dumps(safe, ensure_ascii=False),
-                expires.isoformat(),
-                now.isoformat(),
-            ),
-        )
-        await db.execute(
-            "DELETE FROM prime_ai_conversation_state WHERE expires_at <= ?",
-            (now.isoformat(),),
-        )
-        await db.commit()
+    """Compatibility no-op: PRIME chat text is intentionally not persisted."""
+    return
 
 
 def looks_like_action(text: Any) -> bool:
