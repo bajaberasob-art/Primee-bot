@@ -2055,17 +2055,6 @@ class AITools(commands.Cog):
         conversation = prime_ai_runtime.CONVERSATION_STATE.get(
             (message.guild.id, message.channel.id, message.author.id)
         )
-        if not conversation:
-            try:
-                conversation = await prime_ai_intelligence.load_persistent_conversation(
-                    message.guild.id,
-                    message.channel.id,
-                    message.author.id,
-                    max_messages=int(config.get("context", {}).get("max_messages", 12) or 12),
-                )
-            except Exception:
-                LOGGER.exception("[AI] Could not load persistent context for intent routing.")
-                conversation = []
         current_request = prime_ai_runtime.detect_skill_request(prompt)
         current_is_action = bool(
             current_request and current_request.get("intent") == "SERVER_ACTION"
