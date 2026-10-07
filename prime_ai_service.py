@@ -132,6 +132,11 @@ class GeminiProvider:
             "generationConfig": {
                 "temperature": payload.get("temperature", 0.7),
                 "maxOutputTokens": payload.get("max_tokens", 1200),
+                "thinkingConfig": {
+                    "thinkingLevel": str(
+                        payload.get("thinking_level", "medium")
+                    ).lower(),
+                },
             },
         }
         if system_text:
@@ -1392,6 +1397,11 @@ async def generate_response(
         ),
         "temperature": provider.get("temperature", 0.7),
         "max_tokens": provider.get("max_tokens", 1200),
+        "thinking_level": (
+            "high"
+            if internal and str(mode or "").upper() == "ACTION"
+            else str(provider.get("thinking_level", "medium")).lower()
+        ),
         "stream": bool(config.get("response", {}).get("streaming", False)),
     }
 
