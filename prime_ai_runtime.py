@@ -42,15 +42,11 @@ DANGEROUS_TOOLS = {
 
 
 def action_requires_confirmation(step: dict, config: dict) -> bool:
-    """Require a second confirmation for risky actions or explicit policy."""
+    """Require confirmation only for explicitly dangerous, destructive operations."""
     tool = step.get("tool")
     if tool not in control.ACTION_REGISTRY:
         raise InvalidToolPlan("invalid_tool")
-    metadata = control.ACTION_REGISTRY[tool]
-    return bool(
-        metadata.get("risk") in {"HIGH", "CRITICAL"}
-        or metadata.get("confirmation_required")
-    )
+    return tool in control.DANGEROUS_CONFIRMATION_TOOLS
 
 TOOL_SCHEMAS = {
     "send_message": {"channel_id": "id", "content": "text"},
