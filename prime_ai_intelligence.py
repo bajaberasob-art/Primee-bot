@@ -28,8 +28,10 @@ _ACTIONISH = re.compile(
     r"(?:"
     r"\b(?:rename|change|delete|remove|create|make|set|lock|unlock|"
     r"kick|ban|unban|timeout|mute|give|take|add|remove|edit)\b|"
+    r"(?<![\u0600-\u06ffA-Za-z])"
     r"(?:غير|بدل|عدل|احذف|حذف|امسح|أنشئ|انشئ|سوي|سو|خل|خلي|خله|خليها|"
     r"سم|سمي|سمها|قفل|افتح|طرد|احظر|فك الحظر|اسكت|عط|اعط|شيل|حط|غيّر|غير)"
+    r"(?![\u0600-\u06ffA-Za-z])"
     r")",
     re.I,
 )
