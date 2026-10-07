@@ -1305,6 +1305,43 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
             2,
         )
 
+    async def test_current_turn_preferences_apply_when_profile_is_preloaded(self):
+        session = FakeProviderSession()
+        context = {
+            "user_profile": {
+                "preferences": {},
+                "interaction_count": 4,
+                "last_intent": "CHAT",
+                "last_topic": "design",
+            }
+        }
+
+        await ai.generate_response(
+            session,
+            100000000000000071,
+            100000000000000072,
+            300000000000000073,
+            "رد علي باختصار وبدون إيموجي",
+            context=context,
+        )
+
+        payload = provider_messages(session.payload)
+        system_text = payload[0]["content"]
+        self.assertIn("الطول المفضل: مختصر", system_text)
+        self.assertIn("استخدام الإيموجي: تجنبه", system_text)
+
+    async def test_user_profile_persists_actual_topic_separately_from_intent(self):
+        profile = await prime_ai_intelligence.update_user_profile(
+            100000000000000081,
+            100000000000000082,
+            channel_id=300000000000000083,
+            intent="CHAT",
+            topic="تصميم هوية PRIME",
+        )
+
+        self.assertEqual(profile["last_intent"], "CHAT")
+        self.assertEqual(profile["last_topic"], "تصميم هوية PRIME")
+
     async def test_transient_provider_503_retries_then_succeeds(self):
         session = FakeProviderSession(statuses=[503, 200])
 
