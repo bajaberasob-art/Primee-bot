@@ -21,7 +21,7 @@ PROFILE_TOPIC_VALUES = {
     "CHAT", "QUESTION", "ADMIN_COMMAND", "SERVER_ACTION",
     "HELP", "SUMMARY", "UNKNOWN", "ROUTING",
 }
-_SCHEMA_READY = False
+_SCHEMA_READY_DB: str | None = None
 _SCHEMA_LOCK = asyncio.Lock()
 
 _ACTIONISH = re.compile(
@@ -41,11 +41,13 @@ _INTENT_JSON_RE = re.compile(r"\{.*?\}", re.S)
 
 async def ensure_schema() -> None:
     """Additive AI-only schema. Never alters or deletes existing project tables."""
-    global _SCHEMA_READY
-    if _SCHEMA_READY:
+    global _SCHEMA_READY_DB
+    current_db = str(database.DB_NAME)
+    if _SCHEMA_READY_DB == current_db:
         return
     async with _SCHEMA_LOCK:
-        if _SCHEMA_READY:
+        current_db = str(database.DB_NAME)
+        if _SCHEMA_READY_DB == current_db:
             return
         async with database.connect() as db:
             # Durable state is limited to low-risk user profile metadata.
@@ -68,7 +70,7 @@ async def ensure_schema() -> None:
                 """
             )
             await db.commit()
-        _SCHEMA_READY = True
+        _SCHEMA_READY_DB = current_db
 
 
 def _now() -> datetime:
