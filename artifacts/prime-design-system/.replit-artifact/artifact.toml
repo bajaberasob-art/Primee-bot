@@ -1,0 +1,19 @@
+kind = "design-system"
+previewPath = "/prime-design-system/"
+title = "PRIME Design System"
+description = "A reusable design system for the Arabic-first PRIME Discord community bot and its administration surfaces, based on the existing PRIME interface and daily-streak card."
+version = "1.0.0"
+id = "artifacts/prime-design-system"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/prime-design-system/" ]
+localPort = 22396
+
+[services.development]
+run = "pnpm --filter @workspace/prime-design-system run dev"
+
+[services.env]
+PORT = "22396"
+BASE_PATH = "/prime-design-system/"

@@ -1,0 +1,10 @@
+discord.py==2.7.1
+aiosqlite>=0.19.0
+PyNaCl>=1.6.2
+aiohttp>=3.9.0
+# Require the fixed release for aiohttp's multidict dependency.
+multidict>=6.9.1
+pytest
+Pillow
+arabic-reshaper
+python-bidi

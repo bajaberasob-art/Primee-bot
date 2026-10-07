@@ -1,0 +1,43 @@
+name: PRIME CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: prime-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check dashboard JavaScript syntax
+        run: node --check dashboard/app.js
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q .
+
+      - name: Run tests
+        env:
+          CI: "true"
+        run: pytest -q

@@ -1,0 +1,34 @@
+kind = "web"
+previewPath = "/"
+title = "PRIME Discord Dashboard"
+description = "A deployable Discord bot control dashboard backed by the existing PRIME bot service, with OAuth-protected administration and live server controls."
+version = "1.0.0"
+id = "artifacts/prime-dashboard"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 8099
+
+[services.development]
+run = "pnpm --filter @workspace/prime-dashboard run dev"
+
+[services.production]
+
+[services.production.run]
+args = ["python", "main.py"]
+
+[services.production.run.env]
+PORT = "8099"
+DASHBOARD_PORT = "8099"
+DASHBOARD_BASE_PATH = "/"
+
+[services.production.health.startup]
+path = "/healthz"
+
+[services.env]
+PORT = "8099"
+BASE_PATH = "/"
+DASHBOARD_PORT = "8099"
+DASHBOARD_BASE_PATH = "/"
