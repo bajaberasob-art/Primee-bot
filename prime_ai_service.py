@@ -1407,26 +1407,22 @@ async def generate_response(
     prompt_context = dict(context or {})
     # Bind provider-visible user context to the authenticated Discord actor.
     # Reuse an already-loaded profile to avoid a duplicate database read.
-    if guild_id is not None and actor_id and "user_profile" not in prompt_context:
+    if guild_id is not None and actor_id:
         try:
-            from prime_ai_intelligence import load_user_profile
-            prompt_context["user_profile"] = await load_user_profile(
-                int(guild_id), int(actor_id)
-            )
+            from prime_ai_intelligence import extract_preference_signals, load_user_profile
+            profile = prompt_context.get("user_profile")
+            if not isinstance(profile, dict):
+                profile = await load_user_profile(int(guild_id), int(actor_id))
             if not internal:
-                try:
-                    from prime_ai_intelligence import extract_preference_signals
-                    current_preferences = extract_preference_signals(value)
-                    if current_preferences:
-                        profile = dict(prompt_context["user_profile"])
-                        merged = dict(profile.get("preferences") or {})
-                        merged.update(current_preferences)
-                        profile["preferences"] = merged
-                        prompt_context["user_profile"] = profile
-                except Exception:
-                    LOGGER.exception("[AI] Could not apply current-turn PRIME preferences.")
+                current_preferences = extract_preference_signals(value)
+                if current_preferences:
+                    profile = dict(profile)
+                    merged = dict(profile.get("preferences") or {})
+                    merged.update(current_preferences)
+                    profile["preferences"] = merged
+            prompt_context["user_profile"] = profile
         except Exception:
-            LOGGER.exception("[AI] Could not load durable PRIME user profile.")
+            LOGGER.exception("[AI] Could not load or apply durable PRIME user profile.")
     if channel_id is not None:
         channel_context = dict(prompt_context.get("channel") or {})
         channel_context["id"] = str(channel_id)
