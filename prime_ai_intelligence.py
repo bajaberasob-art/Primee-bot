@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,8 @@ PROFILE_LIMIT = 2400
 TOPIC_LIMIT = 180
 CONVERSATION_LIMIT = 12
 CONVERSATION_RETENTION_HOURS = 24
+_SCHEMA_READY = False
+_SCHEMA_LOCK = asyncio.Lock()
 
 _ACTIONISH = re.compile(
     r"(?:"
@@ -33,7 +36,13 @@ _INTENT_JSON_RE = re.compile(r"\{.*\}", re.S)
 
 async def ensure_schema() -> None:
     """Additive AI-only schema. Never alters or deletes existing project tables."""
-    async with database.connect() as db:
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
+    async with _SCHEMA_LOCK:
+        if _SCHEMA_READY:
+            return
+        async with database.connect() as db:
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS prime_ai_user_profiles (
@@ -69,7 +78,8 @@ async def ensure_schema() -> None:
             ON prime_ai_conversation_state (expires_at)
             """
         )
-        await db.commit()
+            await db.commit()
+        _SCHEMA_READY = True
 
 
 def _now() -> datetime:
