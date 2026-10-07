@@ -746,7 +746,7 @@ class AITools(commands.Cog):
                     actor.id,
                     channel_id=channel_id,
                     intent=str((context or {}).get("intent") or ""),
-                    topic=str((context or {}).get("intent") or "CHAT"),
+                    topic=prime_ai_intelligence._extract_topic(question),
                     preferences=prime_ai_intelligence.extract_preference_signals(question),
                 )
             except Exception:
@@ -778,7 +778,7 @@ class AITools(commands.Cog):
                     guild.id,
                     actor.id,
                     channel_id=channel_id,
-                    topic="SERVER_ACTION",
+                    topic=prime_ai_intelligence._extract_topic(user_text),
                     intent="SERVER_ACTION",
                     preferences=prime_ai_intelligence.extract_preference_signals(user_text),
                 )
