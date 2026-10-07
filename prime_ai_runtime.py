@@ -749,9 +749,21 @@ async def skill_policy(
 
 def _member_context(member: Any) -> dict:
     permissions = getattr(member, "guild_permissions", None)
+    roles = list(getattr(member, "roles", ()) or ())[:30]
     return {
         "user_id": str(getattr(member, "id", "")),
-        "role_ids": [str(getattr(role, "id", "")) for role in getattr(member, "roles", ())[:30]],
+        "display_name": str(
+            getattr(member, "display_name", None)
+            or getattr(member, "global_name", None)
+            or getattr(member, "name", "")
+        )[:100],
+        "username": str(getattr(member, "name", ""))[:100],
+        "role_ids": [str(getattr(role, "id", "")) for role in roles],
+        "role_names": [
+            str(getattr(role, "name", ""))[:80]
+            for role in roles
+            if getattr(role, "name", None)
+        ],
         "permissions": {
             key: bool(getattr(permissions, key, False))
             for key in (
@@ -821,6 +833,7 @@ async def build_context(
     context = {
         "guild": {
             "id": str(guild.id),
+            "name": str(getattr(guild, "name", ""))[:120],
             "member_count": int(getattr(guild, "member_count", 0) or 0),
             "roles": [
                 {"id": str(role.id)}
@@ -833,6 +846,7 @@ async def build_context(
         },
         "channel": {
             "id": str(channel.id),
+            "name": str(getattr(channel, "name", ""))[:100],
         },
         "user": _member_context(author),
     }
@@ -892,11 +906,15 @@ async def build_interaction_context(
     context = {
         "guild": {
             "id": str(guild.id),
+            "name": str(getattr(guild, "name", ""))[:120],
             "member_count": int(getattr(guild, "member_count", 0) or 0),
             "roles": [{"id": str(role.id)} for role in list(getattr(guild, "roles", ()))[:100]],
             "channels": [{"id": str(item.id)} for item in list(getattr(guild, "text_channels", ()))[:100]],
         },
-        "channel": {"id": str(getattr(channel, "id", ""))},
+        "channel": {
+            "id": str(getattr(channel, "id", "")),
+            "name": str(getattr(channel, "name", ""))[:100],
+        },
         "user": _member_context(member),
     }
     messages = []
