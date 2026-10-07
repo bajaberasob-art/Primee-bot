@@ -310,6 +310,10 @@ class AITools(commands.Cog):
         if self._current_http_session() is None:
             raise RuntimeError("AITools requires the shared bot HTTP session")
         try:
+            await prime_ai_intelligence.ensure_schema()
+        except Exception as error:
+            raise RuntimeError("PRIME AI profile storage is not ready") from error
+        try:
             await self.restore_pending_action_views()
         except Exception:
             LOGGER.exception("[AI] Failed to restore pending confirmations.")
@@ -665,7 +669,7 @@ class AITools(commands.Cog):
         mode: str,
         audit_action: str,
     ) -> str:
-        """Generate a response with per-user context plus restart-safe AI state."""
+        """Generate a response with per-user transient context and durable low-risk profile."""
         store = prime_ai_runtime.CONVERSATION_STATE
         channel_id = getattr(channel, "id", None)
         key = (
