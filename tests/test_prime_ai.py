@@ -1423,7 +1423,11 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             session.payload["generationConfig"],
-            {"temperature": 0.4, "maxOutputTokens": 768},
+            {
+                "temperature": 0.4,
+                "maxOutputTokens": 768,
+                "thinkingConfig": {"thinkingLevel": "medium"},
+            },
         )
 
     async def test_gemini_adapter_supports_sse_and_rejects_missing_key(self):
