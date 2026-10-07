@@ -163,7 +163,7 @@ async def update_user_profile(
             VALUES (?,?,?,?,?,?,?,?,?)
             ON CONFLICT(guild_id,user_id) DO UPDATE SET
                 preferences_json=excluded.preferences_json,
-                interaction_count=excluded.interaction_count,
+                interaction_count=prime_ai_user_profiles.interaction_count + 1,
                 last_intent=excluded.last_intent,
                 last_topic=excluded.last_topic,
                 last_channel_id=excluded.last_channel_id,
