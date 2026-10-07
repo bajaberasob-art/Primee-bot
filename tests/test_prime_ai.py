@@ -3278,6 +3278,7 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
         config = deepcopy(prime_ai_control.DEFAULT_CONTROL_SETTINGS)
         config["modes"]["action"] = True
         config["safety"]["enabled"] = True
+        config["actions"]["create_channel"]["enabled"] = False
         plan = {
             "intent": "SERVER_ACTION",
             "skill": "actions",
@@ -3345,15 +3346,15 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
             )["enabled"]
         )
 
-    async def test_default_policy_keeps_dry_run_and_confirms_only_risky_actions(self):
+    async def test_default_policy_executes_directly_and_confirms_only_risky_actions(self):
         config = prime_ai_control.normalize_control_settings(
             deepcopy(prime_ai_control.DEFAULT_CONTROL_SETTINGS)
         )
         self.assertTrue(config["modes"]["action"])
-        self.assertTrue(config["safety"]["dry_run"])
+        self.assertFalse(config["safety"]["dry_run"])
         self.assertFalse(config["safety"]["confirmation_enabled"])
         self.assertTrue(
-            all(not policy["enabled"] for policy in config["actions"].values())
+            all(policy["enabled"] for policy in config["actions"].values())
         )
         for tool, metadata in prime_ai_control.ACTION_REGISTRY.items():
             self.assertEqual(
@@ -3434,7 +3435,7 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(create_operation.await_args.kwargs["confirmation"], "not_required")
         self.assertEqual(execute.await_args.kwargs["confirmation_status"], "not_required")
 
-    async def test_multiple_safe_steps_require_one_confirmation(self):
+    async def test_multiple_safe_steps_execute_without_confirmation(self):
         guild, actor, channel, bot, _channels, _members = self._runtime_context()
         actor.guild_permissions.administrator = False
         config = self._action_config()
@@ -3454,8 +3455,7 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
             "permissions": {"send_message": "send_messages"},
             "clarification": "",
         }
-        operation = {"operation_id": "multi-step-confirm"}
-        actor.send = AsyncMock(return_value=SimpleNamespace(id=800000000000000001))
+        operation = {"operation_id": "multi-step-direct"}
         cog = AITools(bot)
         with (
             patch.object(
@@ -3469,9 +3469,12 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 prime_ai_control, "create_operation", new=AsyncMock(return_value=operation)
             ) as create_operation,
-            patch.object(prime_ai_control, "attach_operation_message", new=AsyncMock()),
-            patch.object(cog, "_register_persistent_view", Mock()),
-            patch("cogs.ai_tools.PrimeAIActionView", return_value=object()),
+            patch.object(
+                prime_ai_control, "claim_operation", new=AsyncMock(return_value=True)
+            ),
+            patch.object(
+                cog, "_execute_operation", new=AsyncMock(return_value="تم التنفيذ")
+            ) as execute,
         ):
             result = await cog._run_action_request(
                 guild,
@@ -3482,11 +3485,13 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
                 source="natural_chat",
             )
 
+        self.assertEqual(result, "تم التنفيذ")
         self.assertEqual(
-            create_operation.await_args.kwargs["confirmation"], "required"
+            create_operation.await_args.kwargs["confirmation"], "not_required"
         )
-        self.assertIn("يحتاج تأكيداً", result)
-        actor.send.assert_awaited_once()
+        self.assertEqual(
+            execute.await_args.kwargs["confirmation_status"], "not_required"
+        )
 
     async def test_administrator_action_is_submitted_without_confirmation(self):
         guild, actor, channel, bot, _channels, _members = self._runtime_context()
@@ -3579,6 +3584,61 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
                 100000000000000901,
             )
         )
+
+    async def test_semantic_action_router_can_normalize_indirect_discord_request(self):
+        guild, actor, channel, bot, _channels, _members = self._runtime_context()
+        config = self._action_config("rename_channel")
+        router = {
+            "route": "ACTION",
+            "tool": "rename_channel",
+            "normalized_request": "غيّر اسم هذه القناة إلى الدعم",
+            "topic": "تغيير اسم القناة",
+            "clarification": "",
+        }
+        with patch.object(
+            prime_ai_intelligence,
+            "infer_natural_action",
+            new=AsyncMock(return_value=router),
+        ):
+            cog = AITools(bot)
+            with patch.object(
+                cog,
+                "_run_action_request",
+                new=AsyncMock(return_value="تم التنفيذ"),
+            ) as run_action:
+                message = SimpleNamespace(
+                    guild=guild,
+                    author=actor,
+                    channel=channel,
+                    content="برايم خل الروم باسم الدعم",
+                    mentions=[],
+                    reference=None,
+                    webhook_id=None,
+                    id=500000000000000901,
+                )
+                with patch.object(
+                    prime_ai_service,
+                    "get_settings",
+                    new=AsyncMock(return_value={
+                        "enabled": True,
+                        "allowed_channel_ids": [],
+                    }),
+                ), patch.object(
+                    prime_ai_control,
+                    "get_control_settings",
+                    new=AsyncMock(return_value={"config": config}),
+                ), patch.object(
+                    self.bot,
+                    "get_context",
+                    new=AsyncMock(return_value=SimpleNamespace(valid=False)),
+                ):
+                    await cog.on_message(message)
+
+                run_action.assert_awaited()
+                self.assertEqual(
+                    run_action.await_args.kwargs["forced_tool"],
+                    "rename_channel",
+                )
 
     async def test_action_planner_keeps_server_owned_intent_and_registered_targets(self):
         guild, actor, channel, _bot, _channels, _members = self._runtime_context()
