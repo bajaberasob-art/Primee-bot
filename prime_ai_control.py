@@ -587,7 +587,9 @@ def normalize_control_settings(
     # HIGH/CRITICAL actions remain gated by live Discord permissions.
     if incoming_policy_version < 4:
         for action_key, metadata in ACTION_REGISTRY.items():
-            value["actions"][action_key]["enabled"] = True
+            # Preserve dangerous-action opt-outs from older server policies.
+            if metadata.get("risk") not in {"HIGH", "CRITICAL"}:
+                value["actions"][action_key]["enabled"] = True
         value["safety"]["dry_run"] = False
     value["policy_version"] = 4
     if value["mode"] not in AI_MODES:
