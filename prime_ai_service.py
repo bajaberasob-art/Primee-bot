@@ -1338,6 +1338,16 @@ async def generate_response(
         else []
     )
     prompt_context = dict(context or {})
+    # Always bind provider-visible user context to the authenticated Discord
+    # actor, never to channel text or model-inferred identity.
+    if guild_id is not None and actor_id:
+        try:
+            from prime_ai_intelligence import load_user_profile
+            prompt_context["user_profile"] = await load_user_profile(
+                int(guild_id), int(actor_id)
+            )
+        except Exception:
+            LOGGER.exception("[AI] Could not load durable PRIME user profile.")
     if channel_id is not None:
         channel_context = dict(prompt_context.get("channel") or {})
         channel_context["id"] = str(channel_id)
