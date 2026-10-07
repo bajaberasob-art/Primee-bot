@@ -14,6 +14,7 @@ from discord.ext import commands
 import prime_ai_service
 import prime_ai_control
 import prime_ai_runtime
+import prime_ai_intelligence
 from interaction_runtime import send_interaction_message
 
 LOGGER = logging.getLogger("AITools")
@@ -664,7 +665,7 @@ class AITools(commands.Cog):
         mode: str,
         audit_action: str,
     ) -> str:
-        """Generate a response with transient context isolated by guild/channel/user."""
+        """Generate a response with per-user context plus restart-safe AI state."""
         store = prime_ai_runtime.CONVERSATION_STATE
         channel_id = getattr(channel, "id", None)
         key = (
@@ -679,13 +680,20 @@ class AITools(commands.Cog):
         max_messages = max(0, min(max_messages, 30))
         effective_history_limit = max_messages - (max_messages % 2)
 
-        async def generate(conversation: list[dict]) -> str:
+        if guild is not None:
+            profile = await prime_ai_intelligence.load_user_profile(
+                int(guild.id), int(actor.id)
+            )
+            context = dict(context or {})
+            context["user_profile"] = profile
+
+        async def generate(conversation: list[dict], request_text: str = question) -> str:
             return await prime_ai_service.generate_response(
                 self._current_http_session(),
                 guild.id if guild is not None else None,
                 actor.id,
                 channel_id,
-                question,
+                request_text,
                 audit_action=audit_action,
                 conversation=conversation,
                 context=context,
@@ -695,19 +703,66 @@ class AITools(commands.Cog):
 
         if key is None:
             return await generate([])
+
         async with store.lock_for(key):
             conversation = (
                 store.get(key)[-effective_history_limit:]
                 if effective_history_limit
                 else []
             )
+            if not conversation and effective_history_limit:
+                try:
+                    conversation = await prime_ai_intelligence.load_persistent_conversation(
+                        guild.id,
+                        channel_id,
+                        actor.id,
+                        max_messages=effective_history_limit,
+                    )
+                except Exception:
+                    LOGGER.exception("[AI] Could not restore persistent PRIME context.")
+                    conversation = []
+
             answer = await generate(conversation)
+
+            if prime_ai_intelligence.response_repeats_recent(answer, conversation):
+                rewrite_request = (
+                    f"{question}\n\n"
+                    "[INTERNAL RESPONSE QUALITY RULE: rewrite this answer naturally. "
+                    "Do not repeat the previous answer's wording or explanation. "
+                    "Preserve the same factual meaning and answer the current request directly.]"
+                )
+                try:
+                    rewritten = await generate(conversation, rewrite_request)
+                    if rewritten and not prime_ai_intelligence.response_repeats_recent(
+                        rewritten, conversation
+                    ):
+                        answer = rewritten
+                except Exception:
+                    LOGGER.exception("[AI] Repetition rewrite failed; keeping first answer.")
+
             store.record_turn(
                 key,
                 question,
                 answer,
                 max_messages=effective_history_limit,
             )
+            try:
+                persisted = store.get(key)[-effective_history_limit:]
+                await prime_ai_intelligence.persist_conversation_turn(
+                    guild.id,
+                    channel_id,
+                    actor.id,
+                    persisted,
+                )
+                await prime_ai_intelligence.update_user_profile(
+                    guild.id,
+                    actor.id,
+                    channel_id=channel_id,
+                    intent=str((context or {}).get("intent") or ""),
+                    topic=question,
+                )
+            except Exception:
+                LOGGER.exception("[AI] Could not persist PRIME user context.")
             return answer
 
     @staticmethod
@@ -721,12 +776,32 @@ class AITools(commands.Cog):
             max_messages = 12
         max_messages = max(0, min(max_messages, 30))
         max_messages -= max_messages % 2
+        key = (guild.id, channel_id, actor.id)
         prime_ai_runtime.CONVERSATION_STATE.record_turn(
-            (guild.id, channel_id, actor.id),
+            key,
             user_text,
             assistant_text,
             max_messages=max_messages,
         )
+
+        async def persist():
+            try:
+                await prime_ai_intelligence.persist_conversation_turn(
+                    guild.id,
+                    channel_id,
+                    actor.id,
+                    prime_ai_runtime.CONVERSATION_STATE.get(key),
+                )
+                await prime_ai_intelligence.update_user_profile(
+                    guild.id,
+                    actor.id,
+                    channel_id=channel_id,
+                    topic=user_text,
+                )
+            except Exception:
+                LOGGER.exception("[AI] Could not persist PRIME action context.")
+
+        asyncio.create_task(persist())
 
     async def answer_ai(self, itx: discord.Interaction, question: str, mode: str | None = None):
         question = str(question).strip()[:prime_ai_service.MAX_CHAT_PROMPT]
@@ -981,6 +1056,8 @@ class AITools(commands.Cog):
         *,
         source: str,
         conversation: list[dict] | None = None,
+        forced_tool: str | None = None,
+        normalized_request: str | None = None,
     ) -> str:
         """Plan, authorize, and execute a natural-language action server-side."""
         try:
@@ -1012,14 +1089,16 @@ class AITools(commands.Cog):
             return f"حدّ طلبات الإجراءات نشط. حاول بعد {max(1, int(wait) + 1)} ثانية."
 
         try:
+            action_prompt = str(normalized_request or question).strip()[:prime_ai_service.MAX_CHAT_PROMPT]
             plan = await prime_ai_runtime.plan_action(
                 self._current_http_session(),
                 guild,
                 actor,
                 channel,
-                question,
+                action_prompt,
                 context=conversation,
                 config=config,
+                forced_tools=[forced_tool] if forced_tool else None,
             )
         except prime_ai_runtime.InvalidToolPlan as error:
             LOGGER.info("[AI] Rejected invalid action plan (%s).", str(error)[:100])
@@ -1084,9 +1163,10 @@ class AITools(commands.Cog):
                 "لم يُنفّذ أي تغيير؛ عطّل المعاينة وفق سياسة الخادم للسماح بالتنفيذ."
             )
 
-        requires_confirmation = (
-            len(plan["steps"]) > 1
-            or any(step["confirmation_required"] for step in plan["steps"])
+        # Normal authorized actions execute directly. Confirmation is reserved
+        # for registered HIGH/CRITICAL operations (or an explicit step policy).
+        requires_confirmation = any(
+            step["confirmation_required"] for step in plan["steps"]
         )
         operation = await prime_ai_control.create_operation(
             guild_id=guild.id,
