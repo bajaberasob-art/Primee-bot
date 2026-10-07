@@ -271,7 +271,7 @@ async def persist_conversation_turn(
                 int(guild_id),
                 int(channel_id),
                 int(user_id),
-                json.dumps(safe, ensure_ascii=False)[:24000],
+                json.dumps(safe, ensure_ascii=False),
                 expires.isoformat(),
                 now.isoformat(),
             ),
@@ -285,6 +285,29 @@ async def persist_conversation_turn(
 
 def looks_like_action(text: Any) -> bool:
     return bool(_ACTIONISH.search(str(text or "")))
+
+
+def should_probe_semantic_action(
+    prompt: Any,
+    conversation: list[dict] | None = None,
+) -> bool:
+    """Avoid a second Gemini call for ordinary chat while catching indirect commands."""
+    value = _clean(prompt, 500).casefold()
+    if looks_like_action(value):
+        return True
+    if re.search(
+        r"(?:\b(?:it|that|same|previous|there|this)\b|"
+        r"(?:هذا|هذه|هذي|هو|هي|هم|هناك|نفس(?:ه|ها|هذي)|مثل\s+قبل|"
+        r"رجع(?:ها|ه)|خل(?:ها|ه)|خله|خليها))",
+        value,
+        re.I,
+    ):
+        for item in reversed((conversation or [])[-6:]):
+            if not isinstance(item, dict):
+                continue
+            if item.get("role") == "user" and looks_like_action(item.get("content", "")):
+                return True
+    return False
 
 
 def _extract_topic(text: Any) -> str:
@@ -363,10 +386,11 @@ async def infer_natural_action(
     detected = runtime.detect_skill_request(prompt)
     if detected and detected.get("intent") == "SERVER_ACTION":
         return None
-    # Addressed PRIME messages are all eligible for semantic routing. The model
-    # decides CHAT vs ACTION vs CLARIFY; local regex remains a fast path and the
-    # executor remains the final authority. This fixes indirect requests such as
-    # "خلها مثل قبل" that do not contain an action verb.
+    if not should_probe_semantic_action(prompt, conversation):
+        return None
+
+    # The model decides CHAT vs ACTION vs CLARIFY for ambiguous command language;
+    # the server-side executor remains the final authority.
     profile = await load_user_profile(int(guild.id), int(member.id))
     enabled_actions = [
         {
