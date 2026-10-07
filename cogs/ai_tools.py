@@ -2213,11 +2213,11 @@ class AITools(commands.Cog):
                 except discord.HTTPException:
                     LOGGER.exception("[AI] Could not deliver natural action failure.")
             return
-        context, conversation = await prime_ai_runtime.build_context(
+        context, _channel_history = await prime_ai_runtime.build_context(
             message,
             config,
             replied_message=referenced,
-            include_channel_history=False,
+            include_channel_history=True,
         )
         context["intent"] = prime_ai_runtime.classify_intent(prompt)
         skill_request = prime_ai_runtime.detect_skill_request(prompt)
