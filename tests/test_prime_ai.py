@@ -3357,10 +3357,10 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(policy["enabled"] for policy in config["actions"].values())
         )
-        for tool, metadata in prime_ai_control.ACTION_REGISTRY.items():
+        for tool in prime_ai_control.ACTION_REGISTRY:
             self.assertEqual(
                 prime_ai_runtime.action_requires_confirmation({"tool": tool}, config),
-                metadata["risk"] in {"HIGH", "CRITICAL"},
+                tool in prime_ai_control.DANGEROUS_CONFIRMATION_TOOLS,
             )
         config["actions"]["send_message"]["confirmation_required"] = True
         config["actions"]["ban_member"]["confirmation_required"] = False
