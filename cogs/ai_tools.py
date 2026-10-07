@@ -2079,6 +2079,60 @@ class AITools(commands.Cog):
         current_is_action = bool(
             current_request and current_request.get("intent") == "SERVER_ACTION"
         )
+        forced_tool = None
+        normalized_action_request = None
+
+        # Local routing handles common commands cheaply. For indirect or colloquial
+        # action language, ask the LLM only for the missing semantic interpretation.
+        if not current_is_action and not pending_action:
+            try:
+                semantic_route = await prime_ai_intelligence.infer_natural_action(
+                    self._current_http_session(),
+                    message.guild,
+                    message.author,
+                    message.channel,
+                    prompt,
+                    conversation=conversation,
+                    config=config,
+                )
+            except (
+                prime_ai_service.AIProviderUnavailable,
+                prime_ai_service.AIChannelDenied,
+                prime_ai_service.AISettingsDisabled,
+            ):
+                semantic_route = None
+            except Exception:
+                LOGGER.exception("[AI] Semantic PRIME intent routing failed.")
+                semantic_route = None
+
+            if semantic_route:
+                if semantic_route.get("route") == "ACTION":
+                    current_is_action = True
+                    forced_tool = semantic_route.get("tool")
+                    normalized_action_request = (
+                        semantic_route.get("normalized_request") or prompt
+                    )
+                    prompt = str(normalized_action_request)[:prime_ai_service.MAX_CHAT_PROMPT]
+                elif semantic_route.get("route") == "CLARIFY":
+                    clarification = (
+                        semantic_route.get("clarification")
+                        or "وضح لي الإجراء الذي تريده بشكل أدق."
+                    )
+                    await message.reply(
+                        clarification[:500],
+                        mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    self._record_message_turn(
+                        message.guild,
+                        message.author,
+                        message.channel,
+                        turn_prompt,
+                        clarification,
+                        config,
+                    )
+                    return
+
         if pending_action:
             if re.search(
                 r"^\s*(?:cancel|abort|stop|never\s*mind|no|nope|لا|لأ|كلا|"
@@ -2128,6 +2182,8 @@ class AITools(commands.Cog):
                     config,
                     source="natural_chat",
                     conversation=conversation,
+                    forced_tool=forced_tool,
+                    normalized_request=normalized_action_request,
                 )
                 if response_config.get("reply_behavior", True):
                     await message.reply(
