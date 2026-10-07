@@ -1053,11 +1053,14 @@ def _build_system_prompt(
     channel_id = str((context or {}).get("channel", {}).get("id", ""))
     channel_persona = control_config.get("channel_personas", {}).get(channel_id, {})
     role_ids = (context or {}).get("user", {}).get("role_ids", [])
+    # Discord member.roles is ordered from @everyone toward the highest role;
+    # prefer the highest matching PRIME role override when several apply.
+    role_overrides = control_config.get("role_overrides", {})
     role_persona = next(
         (
-            control_config.get("role_overrides", {}).get(str(role_id), {})
-            for role_id in role_ids
-            if control_config.get("role_overrides", {}).get(str(role_id))
+            role_overrides.get(str(role_id), {})
+            for role_id in reversed(role_ids)
+            if role_overrides.get(str(role_id))
         ),
         {},
     )
@@ -1410,6 +1413,18 @@ async def generate_response(
             prompt_context["user_profile"] = await load_user_profile(
                 int(guild_id), int(actor_id)
             )
+            if not internal:
+                try:
+                    from prime_ai_intelligence import extract_preference_signals
+                    current_preferences = extract_preference_signals(value)
+                    if current_preferences:
+                        profile = dict(prompt_context["user_profile"])
+                        merged = dict(profile.get("preferences") or {})
+                        merged.update(current_preferences)
+                        profile["preferences"] = merged
+                        prompt_context["user_profile"] = profile
+                except Exception:
+                    LOGGER.exception("[AI] Could not apply current-turn PRIME preferences.")
         except Exception:
             LOGGER.exception("[AI] Could not load durable PRIME user profile.")
     if channel_id is not None:
