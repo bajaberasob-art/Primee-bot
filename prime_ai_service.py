@@ -1062,6 +1062,15 @@ def _build_system_prompt(
             {key: value for key, value in channel_persona.items() if key != "enabled"}
         )
     user_preferences = _approved_user_preferences(memories)
+    user_profile = dict((context or {}).get("user_profile") or {})
+    persona_behavior = ""
+    try:
+        from prime_ai_intelligence import behavior_contract
+        persona_behavior = behavior_contract()
+    except Exception:
+        persona_behavior = (
+            "حافظ على شخصية PRIME بشكل ثابت، واستفد من السياق الحالي دون تكرار."
+        )
     persona_lines = [
         "شخصية PRIME هوية تواصل ثابتة يحددها الخادم؛ استخدم سماتها في أسلوب التفكير والتواصل عبر الأدوار دون أن تمنح صلاحيات أو تغيّر قواعد الأمان.",
         f"الشخصية: {personality.get('preset', 'Practical')}",
@@ -1099,6 +1108,23 @@ def _build_system_prompt(
     preference_lines = [
         "هذه تفضيلات مستقلة عن شخصية PRIME وتخص المستخدم الحالي فقط؛ طبّقها على طريقة العرض لهذا المستخدم دون نقلها لغيره أو تغيير الصلاحيات وقواعد الأمان."
     ]
+    if user_profile:
+        preference_lines.append(
+            "ملف السلوك المستمر للمستخدم الحالي: "
+            + json.dumps(
+                {
+                    "preferences": user_profile.get("preferences", {}),
+                    "interaction_count": user_profile.get("interaction_count", 0),
+                    "last_intent": user_profile.get("last_intent", ""),
+                    "last_topic": user_profile.get("last_topic", ""),
+                    "last_channel_id": user_profile.get("last_channel_id"),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )[:2200]
+        )
+    preference_lines.append("سلوك PRIME المطلوب:
+" + persona_behavior)
     if user_preferences:
         if "response_length" in user_preferences:
             preference_lines.append(
