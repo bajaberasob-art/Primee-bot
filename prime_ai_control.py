@@ -187,8 +187,8 @@ ACTION_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 # Keep the static registry complete and expose runtime policy separately in
-# DEFAULT_CONTROL_SETTINGS. Actions are available by default; HIGH/CRITICAL
-# actions retain their mandatory confirmation policy.
+# DEFAULT_CONTROL_SETTINGS. Actions are available by default; only explicitly dangerous/destructive actions
+# retain their mandatory confirmation policy.
 for _action_key, _action in ACTION_REGISTRY.items():
     _action.update({
         "enabled": True,
@@ -202,8 +202,8 @@ for _action_key, _action in ACTION_REGISTRY.items():
 ACTION_POLICY_DEFAULTS = {
     key: {
         # PRIME actions are available to natural-language requests by default;
-        # HIGH/CRITICAL actions still require real Discord permissions plus
-        # their risk-based confirmation gate.
+        # explicitly dangerous actions still require real Discord permissions plus
+        # their dedicated confirmation gate.
         "enabled": True,
         "confirmation_required": key in DANGEROUS_CONFIRMATION_TOOLS,
         "allowed_channels": [],
@@ -624,8 +624,8 @@ def normalize_control_settings(
             policy.get("confirmation_required"), bool
         ):
             raise ValueError("invalid_action_policy")
-        # Confirmation policy is fixed by registered action risk: safe actions
-        # do not ask, and high-risk actions cannot be disabled by a stale draft.
+        # Confirmation policy is fixed by the explicit dangerous-action registry;
+        # normal privileged actions do not ask for a second confirmation.
         policy["confirmation_required"] = action_id in DANGEROUS_CONFIRMATION_TOOLS
         for key in ("allowed_channels", "allowed_roles"):
             policy[key] = _ids(policy.get(key), f"{action_id}_{key}")
