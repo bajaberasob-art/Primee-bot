@@ -1122,7 +1122,6 @@ def _build_system_prompt(
                     "interaction_count": user_profile.get("interaction_count", 0),
                     "last_intent": user_profile.get("last_intent", ""),
                     "last_topic": user_profile.get("last_topic", ""),
-                    "last_channel_id": user_profile.get("last_channel_id"),
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
