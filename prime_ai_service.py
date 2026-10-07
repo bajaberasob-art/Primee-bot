@@ -1240,6 +1240,40 @@ def _model_visible_context(context: dict | None, mode: str) -> dict:
         "HELP", "SUMMARY", "UNKNOWN",
     }:
         visible["intent"] = {"category": intent}
+
+    guild_value = value.get("guild")
+    if isinstance(guild_value, dict):
+        visible["guild"] = {
+            "name": str(guild_value.get("name", ""))[:120],
+            "member_count": int(guild_value.get("member_count", 0) or 0),
+        }
+
+    channel_value = value.get("channel")
+    if isinstance(channel_value, dict):
+        visible["channel"] = {
+            "name": str(channel_value.get("name", ""))[:100],
+        }
+
+    user_value = value.get("user")
+    if isinstance(user_value, dict):
+        safe_user = {
+            "display_name": str(user_value.get("display_name", ""))[:100],
+            "username": str(user_value.get("username", ""))[:100],
+            "role_names": [
+                str(item)[:80] for item in (user_value.get("role_names") or [])[:30]
+            ],
+            "permissions": {
+                str(key): bool(value)
+                for key, value in (user_value.get("permissions") or {}).items()
+                if str(key) in {
+                    "administrator", "manage_guild", "manage_messages",
+                    "manage_roles", "manage_channels", "moderate_members",
+                    "kick_members", "ban_members",
+                }
+            },
+        }
+        if safe_user["display_name"] or safe_user["username"] or safe_user["role_names"]:
+            visible["current_user"] = safe_user
     replied_message = value.get("replied_message")
     if isinstance(replied_message, dict):
         visible["replied_message"] = {
