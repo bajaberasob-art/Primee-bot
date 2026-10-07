@@ -2750,7 +2750,7 @@ class PrimeAIApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("moderation", initial)
         action_registry = initial["action_registry"]
         self.assertTrue(action_registry)
-        self.assertTrue(all(action["enabled"] is False for action in action_registry))
+        self.assertTrue(all(action["enabled"] is True for action in action_registry))
         self.assertTrue(all(
             action["confirmation_required"]
             == (action["risk"] in {"HIGH", "CRITICAL"})
