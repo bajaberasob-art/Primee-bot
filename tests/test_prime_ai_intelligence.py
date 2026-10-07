@@ -25,6 +25,18 @@ class TestPrimeAIIntelligence(unittest.TestCase):
             )
         )
 
+    def test_semantic_probe_ignores_common_arabic_substrings(self):
+        self.assertFalse(
+            prime_ai_intelligence.should_probe_semantic_action(
+                "خلني أفكر شوي قبل أرد عليك"
+            )
+        )
+        self.assertFalse(
+            prime_ai_intelligence.should_probe_semantic_action(
+                "هذا الكلام غير مناسب للنقاش"
+            )
+        )
+
     def test_semantic_probe_does_not_promote_unrelated_pronoun_chat(self):
         self.assertFalse(
             prime_ai_intelligence.should_probe_semantic_action(
