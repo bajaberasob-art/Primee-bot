@@ -132,7 +132,7 @@ AUTHORIZED_ROLE_NAMES = frozenset(
 )
 # حدود معدل الطلبات: (عدد الطلبات، النافذة بالثواني)
 SAVE_LIMIT, READ_LIMIT = (5, 10.0), (60, 10.0)
-IP_API_LIMIT, IP_SENSITIVE_LIMIT = (60, 60.0), (10, 60.0)
+IP_API_LIMIT, IP_SENSITIVE_LIMIT = (180, 60.0), (10, 60.0)
 MAX_BODY = 16 * 1024
 GRANT_TTL = 60.0
 RATE_BUCKETS: dict[tuple, deque] = {}

@@ -154,6 +154,31 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         ws._community_cog = self._community_cog
 
+    def test_ip_rate_limits_allow_180_standard_and_keep_sensitive_at_10(self):
+        ws.RATE_BUCKETS.clear()
+        standard_key = ("ip", "203.0.113.10", "standard")
+        sensitive_key = ("ip", "203.0.113.10", "sensitive")
+        with patch("web_server.time.monotonic", return_value=1000.0):
+            for _ in range(180):
+                self.assertEqual(
+                    ws.rate_limited(standard_key, ws.IP_API_LIMIT),
+                    0,
+                )
+            self.assertGreater(
+                ws.rate_limited(standard_key, ws.IP_API_LIMIT),
+                0,
+            )
+
+            for _ in range(10):
+                self.assertEqual(
+                    ws.rate_limited(sensitive_key, ws.IP_SENSITIVE_LIMIT),
+                    0,
+                )
+            self.assertGreater(
+                ws.rate_limited(sensitive_key, ws.IP_SENSITIVE_LIMIT),
+                0,
+            )
+
     async def test_authorization_is_enforced_server_side(self):
         self.assertEqual((await call(ws.api_get_settings, request("GET", "/x")))[0], 401)
         # user 11 is in the session guild list but lacks the 0x8 bit on the live guild
