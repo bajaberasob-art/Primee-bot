@@ -57,10 +57,6 @@ author = "agent"
 task = "workflow.run"
 args = "PRIME Bot + Dashboard Backend"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "PRIME AI Dashboard Test Harness"
-
 [[workflows.workflow]]
 name = "PRIME Bot + Dashboard Backend"
 author = "agent"
@@ -71,18 +67,6 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "DASHBOARD_LOCAL_LOGIN=0 DASHBOARD_BASE_PATH=/api/dashboard/ PORT=8008 DASHBOARD_PORT=8008 python main.py"
-
-[[workflows.workflow]]
-name = "PRIME AI Dashboard Test Harness"
-author = "agent"
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "PYTHONPATH=. HARNESS_PORT=8000 python tests/dashboard_harness.py"
-waitForPort = 8000
 
 [userenv]
 

@@ -1388,20 +1388,27 @@
   padding: .35rem .6rem;
 }
 
+.prime-ai-page.has-unsaved-changes {
+  padding-bottom: 7rem;
+}
+
 .prime-ai-save-dock {
-  position: sticky;
-  bottom: .65rem;
-  z-index: 5;
+  position: fixed;
+  left: 50%;
+  bottom: max(.65rem, env(safe-area-inset-bottom));
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  width: min(760px, calc(100vw - 1.5rem));
   padding: .75rem 1rem;
   border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line));
   border-radius: var(--r);
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
   backdrop-filter: blur(14px);
+  transform: translateX(-50%);
 }
 
 .prime-ai-save-dock[hidden],
@@ -1418,6 +1425,10 @@
 
 .prime-ai-save-dock.has-conflict {
   border-color: color-mix(in srgb, var(--amber) 50%, var(--line));
+}
+
+.prime-ai-save-dock.has-global-dock {
+  bottom: calc(6rem + env(safe-area-inset-bottom));
 }
 
 .prime-ai-save-actions {
@@ -1437,11 +1448,15 @@
   }
 
   .prime-ai-save-dock {
-    bottom: .25rem;
+    bottom: max(.25rem, env(safe-area-inset-bottom));
     align-items: stretch;
     flex-direction: column;
     gap: .55rem;
     padding: .7rem;
+  }
+
+  .prime-ai-save-dock.has-global-dock {
+    bottom: calc(7.5rem + env(safe-area-inset-bottom));
   }
 
   .prime-ai-save-actions {

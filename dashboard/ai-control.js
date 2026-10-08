@@ -159,8 +159,16 @@
       const conflictButton = dock.querySelector('[data-action="apply-control-conflict"]');
       const status = dock.querySelector(".prime-ai-save-status");
       const conflicted = Boolean(state.controlConflict);
+      const globalSaveDock = document.querySelector(".dock");
       dock.classList.toggle("has-conflict", conflicted);
-      dock.hidden = !dirty && !conflicted && !state.controlSaving;
+      const visible = dirty || conflicted || state.controlSaving;
+      dock.classList.toggle(
+        "has-global-dock",
+        Boolean(globalSaveDock && globalSaveDock.classList.contains("show")),
+      );
+      dock.hidden = !visible;
+      const page = container.querySelector(".prime-ai-page");
+      if (page) page.classList.toggle("has-unsaved-changes", visible);
       if (status) {
         status.textContent = conflicted
           ? "تغيّرت نسخة الخادم. حمّلها لمراجعة الإعدادات قبل الحفظ."

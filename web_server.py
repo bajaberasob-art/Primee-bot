@@ -888,10 +888,10 @@ def service_worker_source() -> str:
 const STATIC = [
   "./",
   "./static/app.css",
-  "./static/ai-control.css?v=prime-talk-dashboard-3",
+  "./static/ai-control.css?v=prime-talk-dashboard-4",
   "./static/visual-refresh.css?v=visual-refresh-2",
   "./static/leveling-card-assets.css?v=phase7",
-  "./static/ai-control.js?v=prime-talk-dashboard-3",
+  "./static/ai-control.js?v=prime-talk-dashboard-4",
   "./static/app.js?v=prime-talk-dashboard-1",
   "./manifest.json",
   "./icon.svg",
