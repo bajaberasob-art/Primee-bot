@@ -120,6 +120,23 @@ class OvertakeEvent:
     previous_rank: int
 
 
+def _member_mention(member: Any) -> str:
+    mention = getattr(member, "mention", None)
+    if mention:
+        return str(mention)
+    member_id = getattr(member, "id", None)
+    return f"<@{member_id}>" if member_id is not None else "عضو غير معروف"
+
+
+def _member_display_name(member: Any) -> str:
+    return str(
+        getattr(member, "display_name", None)
+        or getattr(member, "name", None)
+        or getattr(member, "id", None)
+        or "عضو غير معروف"
+    )
+
+
 @dataclass(frozen=True)
 class RolePromotionEvent:
     guild: Any
@@ -817,9 +834,9 @@ class Levels(EngagementXP, commands.Cog):
             return
         await self._send_leveling_notice(
             event.guild, settings.get("overtake_channel_id"), settings.get("overtake_template"),
-            {"passer": event.passer.mention, "passed": event.passed.mention,
-             "user": event.passer.mention, "mention": event.passer.mention,
-             "username": event.passer.display_name, "rank": event.new_rank,
+            {"passer": _member_mention(event.passer), "passed": _member_mention(event.passed),
+             "user": _member_mention(event.passer), "mention": _member_mention(event.passer),
+             "username": _member_display_name(event.passer), "rank": event.new_rank,
              "server": event.guild.name},
             settings, "overtake", [event.passer, event.passed],
         )

@@ -17,7 +17,7 @@ from PIL import Image
 import database
 from cogs.rank_commands import LeaderboardView, RankCommands, publish_rank_commands
 from cogs import card_generator
-from cogs.levels import Levels
+from cogs.levels import Levels, OvertakeEvent
 from cogs.utilities import Utilities, CommandIntercepted
 from level_progression import level_from_xp, xp_required
 
@@ -625,6 +625,45 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         call = self.channel.send.await_args
         self.assertEqual(call.kwargs["file"].filename, "prime-level-up.gif")
         self.assertEqual(call.kwargs["embed"].image.url, "attachment://prime-level-up.gif")
+
+    async def test_overtake_notice_handles_uncached_member_object(self):
+        passed = discord.Object(id=124)
+        event = OvertakeEvent(
+            self.members[1], passed, 2, self.guild, 30, 3,
+        )
+        settings = {
+            "is_enabled": True,
+            "overtake_channel_id": self.channel.id,
+            "overtake_template": "{passer} passed {passed}; {username}, rank {rank}.",
+        }
+        self.guild.name = "Test server"
+        notification = {
+            "enabled": True,
+            "channel": str(self.channel.id),
+            "message": settings["overtake_template"],
+            "mentionUser": True,
+        }
+        self.guild.get_channel = lambda channel_id: (
+            self.channel if channel_id == self.channel.id else None
+        )
+
+        with (
+            patch(
+                "cogs.levels.database.get_level_settings",
+                new=AsyncMock(return_value=settings),
+            ),
+            patch(
+                "cogs.levels.controls_with_defaults",
+                return_value={"notifications": {"overtake": notification}},
+            ),
+        ):
+            await Levels(self.bot).on_lona_text_overtake(event)
+
+        self.channel.send.assert_awaited_once()
+        self.assertEqual(
+            self.channel.send.await_args.kwargs["content"],
+            "<@1> passed <@124>; عضو 1, rank 2.",
+        )
 
     async def test_button_rechecks_disabled_top_settings_and_global_policy(self):
         reply = await self.top(self.interaction())
