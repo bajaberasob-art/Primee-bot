@@ -15,6 +15,10 @@ import database
 import prime_ai_control as control
 import prime_ai_service as service
 import subscription_service
+from management_access import (
+    member_has_management_tier,
+    required_tier_for_permission,
+)
 
 
 TOOL_TO_SKILL = {
@@ -2097,6 +2101,21 @@ async def validate_action_policy(
         raise AccessDenied("required_safety_protection")
     if not access_allowed(config, actor, channel)[0]:
         raise AccessDenied("global_access_denied")
+    required_tier = required_tier_for_permission(
+        metadata.get("discord_permission")
+    )
+    if required_tier:
+        try:
+            guild_settings = await database.get_guild_settings(int(guild.id))
+        except Exception as error:
+            raise AccessDenied("management_policy_unavailable") from error
+        if not member_has_management_tier(
+            actor,
+            guild,
+            guild_settings.get("settings", {}),
+            required_tier,
+        ):
+            raise AccessDenied("management_role_denied")
     role_ids = {str(getattr(role, "id", "")) for role in getattr(actor, "roles", ())}
     if policy.get("allowed_roles") and not role_ids.intersection(policy["allowed_roles"]):
         raise AccessDenied("action_role_denied")

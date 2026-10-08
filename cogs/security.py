@@ -12,7 +12,20 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from database import SETTINGS_DEFAULTS, get_guild_settings, update_guild_settings
+from database import (
+    SETTINGS_DEFAULTS,
+    complete_security_lockdown_unlock,
+    get_all_security_whitelists,
+    get_guild_settings,
+    get_security_incidents,
+    get_security_lockdown_snapshots,
+    get_security_lockdown_status,
+    record_security_incident,
+    save_security_lockdown_snapshots,
+    set_security_lockdown_status,
+    set_security_whitelist_member,
+    update_guild_settings,
+)
 
 
 logger = logging.getLogger("SecurityCog")
@@ -30,6 +43,14 @@ THREAT_RETENTION = 60.0
 AUDIT_ENTRY_MAX_AGE = 20.0
 LOCKDOWN_INTERVAL = 0.35
 INCIDENT_BUFFER_SIZE = 50
+
+
+def restore_lockdown_overwrite(overwrite, original: dict[str, Any]):
+    """Restore only permission bits still set to the lockdown's explicit deny."""
+    for permission in ("send_messages", "send_messages_in_threads"):
+        if getattr(overwrite, permission) is False:
+            setattr(overwrite, permission, original[permission])
+    return overwrite
 
 
 class MathCaptchaModal(discord.ui.Modal, title="بوابة التحقق البشري الذكية"):
@@ -108,11 +129,56 @@ class Security(commands.Cog):
         self._lockdown_queue: Optional[asyncio.Queue] = None
         self._lockdown_worker: Optional[asyncio.Task] = None
         self._lockdown_states: dict[int, bool] = {}
+        self._lockdown_statuses: dict[int, str] = {}
+        self._lockdown_operation_locks: dict[int, asyncio.Lock] = {}
         self._captcha_views: dict[int, CaptchaView] = {}
 
     # ------------------------------------------------------------------
     # Dynamic configuration and incident stream
     # ------------------------------------------------------------------
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Restore durable operator controls and persistent CAPTCHA callbacks."""
+        cached_statuses = dict(self._lockdown_statuses)
+        try:
+            all_whitelists = await get_all_security_whitelists()
+        except Exception:
+            logger.exception("[SECURITY_STATE] تعذر تحميل قوائم المشرفين الموثوقين")
+            all_whitelists = None
+
+        for guild in list(getattr(self.bot, "guilds", ()) or ()):
+            guild_id = int(guild.id)
+            if all_whitelists is not None:
+                self._whitelist[guild_id] = set(
+                    all_whitelists.get(guild_id, set())
+                )
+            try:
+                status = await get_security_lockdown_status(guild_id)
+            except Exception:
+                logger.exception(
+                    "[SECURITY_STATE] تعذر تحميل حالة الإغلاق للسيرفر %s",
+                    guild_id,
+                )
+                status = self._lockdown_statuses.get(guild_id, "lock_partial")
+            self._lockdown_statuses[guild_id] = status
+            self._lockdown_states[guild_id] = status != "unlocked"
+
+            settings = await self.security_settings(guild_id)
+            role_id = settings.get("captcha_role_id")
+            if settings.get("captcha_enabled") and role_id:
+                self._captcha_view(int(role_id))
+
+            if status in {"locking", "lock_partial"} and cached_statuses.get(guild_id) not in {
+                "locking",
+                "lock_partial",
+            }:
+                await self.emergency_lockdown(guild_id, True)
+            elif status in {"unlocking", "unlock_partial"} and cached_statuses.get(guild_id) not in {
+                "unlocking",
+                "unlock_partial",
+            }:
+                await self.emergency_lockdown(guild_id, False)
+
     async def security_settings(self, guild_id: int) -> dict[str, Any]:
         """Read security values through database.py's TTL/LRU cache."""
         try:
@@ -149,13 +215,19 @@ class Security(commands.Cog):
             rows = [row for row in rows if row["guild_id"] == int(guild_id)]
         return [dict(row) for row in rows]
 
+    async def get_persisted_incidents(self, guild_id: int) -> list[dict[str, Any]]:
+        return await get_security_incidents(int(guild_id), limit=200)
+
     def get_whitelist(self, guild_id: int) -> list[str]:
         return [str(user_id) for user_id in sorted(self._whitelist.get(int(guild_id), set()))]
 
     def is_locked(self, guild_id: int) -> bool:
+        status = self._lockdown_statuses.get(int(guild_id))
+        if status is not None:
+            return status != "unlocked"
         return bool(self._lockdown_states.get(int(guild_id), False))
 
-    def record_control_action(
+    async def record_control_action(
         self,
         guild_id: int,
         culprit_id: int,
@@ -164,16 +236,13 @@ class Security(commands.Cog):
         mitigation_taken: str,
     ) -> dict[str, Any]:
         """Record a dashboard/operator action without treating it as an attack."""
-        incident = {
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "guild_id": int(guild_id),
-            "culprit_id": int(culprit_id),
-            "culprit_name": str(culprit_name),
-            "action_type": str(action_type),
-            "mitigation_taken": str(mitigation_taken),
-        }
-        with self._incident_lock:
-            self.incidents.append(incident)
+        incident = await self._record_incident(
+            guild_id,
+            culprit_id,
+            action_type,
+            mitigation_taken,
+            culprit_name=str(culprit_name),
+        )
         logger.info(
             "[SECURITY_CONTROL] guild=%s operator=%s action=%s mitigation=%s",
             guild_id,
@@ -181,29 +250,43 @@ class Security(commands.Cog):
             action_type,
             mitigation_taken,
         )
-        return dict(incident)
+        return incident
 
-    def _record_incident(
+    async def _record_incident(
         self,
         guild_id: int,
         culprit: Any,
         action_type: str,
         mitigation_taken: str,
+        *,
+        culprit_name: Optional[str] = None,
     ) -> dict[str, Any]:
         culprit_id = int(getattr(culprit, "id", culprit))
-        culprit_name = getattr(culprit, "display_name", None) or getattr(
+        name = culprit_name or getattr(culprit, "display_name", None) or getattr(
             culprit, "name", None
-        )
-        if not culprit_name:
-            culprit_name = str(culprit_id)
-        incident = {
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "guild_id": int(guild_id),
-            "culprit_id": culprit_id,
-            "culprit_name": str(culprit_name),
-            "action_type": str(action_type),
-            "mitigation_taken": str(mitigation_taken),
-        }
+        ) or str(culprit_id)
+        try:
+            incident = await record_security_incident(
+                guild_id,
+                culprit_id,
+                str(name),
+                action_type,
+                mitigation_taken,
+            )
+        except Exception:
+            # Audit persistence must not interrupt a Discord-side protection.
+            logger.exception(
+                "[SECURITY_INCIDENT] Failed to persist event for guild %s",
+                guild_id,
+            )
+            incident = {
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "guild_id": int(guild_id),
+                "culprit_id": culprit_id,
+                "culprit_name": str(name),
+                "action_type": str(action_type),
+                "mitigation_taken": str(mitigation_taken),
+            }
         with self._incident_lock:
             self.incidents.append(incident)
         logger.warning(
@@ -213,13 +296,15 @@ class Security(commands.Cog):
             action_type,
             mitigation_taken,
         )
-        return incident
+        return dict(incident)
 
-    def whitelist_member(self, guild_id: int, user_id: int) -> None:
-        """Add an explicitly trusted operator to the in-memory whitelist."""
+    async def whitelist_member(self, guild_id: int, user_id: int) -> None:
+        """Persist and cache an explicitly trusted operator."""
+        await set_security_whitelist_member(guild_id, user_id, True)
         self._whitelist[int(guild_id)].add(int(user_id))
 
-    def remove_whitelisted_member(self, guild_id: int, user_id: int) -> None:
+    async def remove_whitelisted_member(self, guild_id: int, user_id: int) -> None:
+        await set_security_whitelist_member(guild_id, user_id, False)
         self._whitelist[int(guild_id)].discard(int(user_id))
 
     def _is_whitelisted(self, guild: discord.Guild, user_id: int) -> bool:
@@ -254,38 +339,157 @@ class Security(commands.Cog):
                 self._lockdown_queue = None
 
     async def emergency_lockdown(self, guild_id: int, locked: bool) -> dict[str, Any]:
-        """Queue public-channel permission changes without blocking the caller."""
-        guild = self.bot.get_guild(int(guild_id))
+        """Queue lockdown changes while preserving pre-existing permissions."""
+        guild_id = int(guild_id)
+        guild = self.bot.get_guild(guild_id)
         if guild is None:
             return {"queued": False, "channels": 0, "locked": bool(locked)}
 
         everyone = guild.default_role
-        channels = []
-        for channel in guild.text_channels:
+        operation_lock = self._lockdown_operation_locks.setdefault(
+            guild_id, asyncio.Lock()
+        )
+        async with operation_lock:
             try:
-                if self.is_lockdown_exempt(channel):
-                    continue
-                if channel.permissions_for(everyone).view_channel:
-                    channels.append(channel.id)
-            except (AttributeError, discord.DiscordException):
-                logger.debug("تعذر فحص خصوصية القناة %s", channel.id, exc_info=True)
+                previous_status = await get_security_lockdown_status(guild_id)
+                snapshots_by_channel = await get_security_lockdown_snapshots(guild_id)
+            except Exception:
+                logger.exception(
+                    "[SECURITY_LOCKDOWN] تعذر قراءة الحالة المحفوظة للسيرفر %s",
+                    guild_id,
+                )
+                return {
+                    "queued": False,
+                    "channels": 0,
+                    "locked": self.is_locked(guild_id),
+                    "error": "state_unavailable",
+                }
 
-        self._ensure_lockdown_worker()
-        job = (int(guild.id), bool(locked), channels)
-        try:
-            self._lockdown_queue.put_nowait(job)
-        except asyncio.QueueFull:
-            logger.error("[SECURITY_LOCKDOWN] طابور الإغلاق ممتلئ للسيرفر %s", guild.id)
-            return {"queued": False, "channels": len(channels), "locked": bool(locked)}
+            if locked:
+                channels = []
+                snapshots = []
+                for channel in guild.text_channels:
+                    try:
+                        if self.is_lockdown_exempt(channel):
+                            continue
+                        if not channel.permissions_for(everyone).view_channel:
+                            continue
+                        overwrite = channel.overwrites_for(everyone)
+                        channels.append(int(channel.id))
+                        snapshots.append({
+                            "channel_id": int(channel.id),
+                            "send_messages": overwrite.send_messages,
+                            "send_messages_in_threads": (
+                                overwrite.send_messages_in_threads
+                            ),
+                        })
+                    except (AttributeError, discord.DiscordException):
+                        logger.debug(
+                            "تعذر فحص خصوصية القناة %s",
+                            getattr(channel, "id", "unknown"),
+                            exc_info=True,
+                        )
+                try:
+                    await save_security_lockdown_snapshots(guild_id, snapshots)
+                except Exception:
+                    logger.exception(
+                        "[SECURITY_LOCKDOWN] تعذر حفظ صلاحيات القنوات قبل الإغلاق "
+                        "في السيرفر %s",
+                        guild_id,
+                    )
+                    return {
+                        "queued": False,
+                        "channels": 0,
+                        "locked": self.is_locked(guild_id),
+                        "error": "snapshot_save_failed",
+                    }
+            else:
+                if not snapshots_by_channel:
+                    if previous_status == "unlocked":
+                        self._lockdown_statuses[guild_id] = "unlocked"
+                        self._lockdown_states[guild_id] = False
+                        return {
+                            "queued": True,
+                            "channels": 0,
+                            "locked": False,
+                        }
+                    logger.error(
+                        "[SECURITY_LOCKDOWN] رفض فتح السيرفر %s لغياب نسخة "
+                        "الصلاحيات الأصلية",
+                        guild_id,
+                    )
+                    return {
+                        "queued": False,
+                        "channels": 0,
+                        "locked": True,
+                        "error": "restore_snapshot_missing",
+                    }
+                channels = list(snapshots_by_channel)
 
-        self._lockdown_states[int(guild.id)] = bool(locked)
-        self._record_incident(
-            guild.id,
+            self._ensure_lockdown_worker()
+            if self._lockdown_queue is None or self._lockdown_queue.full():
+                logger.error(
+                    "[SECURITY_LOCKDOWN] طابور الإغلاق ممتلئ للسيرفر %s",
+                    guild_id,
+                )
+                return {
+                    "queued": False,
+                    "channels": len(channels),
+                    "locked": self.is_locked(guild_id),
+                    "error": "queue_full",
+                }
+
+            next_status = "locking" if locked else "unlocking"
+            try:
+                await set_security_lockdown_status(guild_id, next_status)
+            except Exception:
+                logger.exception(
+                    "[SECURITY_LOCKDOWN] تعذر حفظ حالة العملية للسيرفر %s",
+                    guild_id,
+                )
+                return {
+                    "queued": False,
+                    "channels": len(channels),
+                    "locked": self.is_locked(guild_id),
+                    "error": "state_save_failed",
+                }
+            self._lockdown_statuses[guild_id] = next_status
+            self._lockdown_states[guild_id] = True
+            try:
+                self._lockdown_queue.put_nowait(
+                    (guild_id, bool(locked), channels)
+                )
+            except asyncio.QueueFull:
+                self._lockdown_statuses[guild_id] = previous_status
+                self._lockdown_states[guild_id] = previous_status != "unlocked"
+                try:
+                    await set_security_lockdown_status(
+                        guild_id, previous_status
+                    )
+                except Exception:
+                    logger.exception(
+                        "[SECURITY_LOCKDOWN] تعذر التراجع عن الحالة المحفوظة "
+                        "للسيرفر %s",
+                        guild_id,
+                    )
+                return {
+                    "queued": False,
+                    "channels": len(channels),
+                    "locked": self.is_locked(guild_id),
+                    "error": "queue_full",
+                }
+
+        await self._record_incident(
+            guild_id,
             getattr(self.bot, "user", 0) or 0,
             "emergency_lockdown",
             f"queued:{'locked' if locked else 'unlocked'}:{len(channels)}",
         )
-        return {"queued": True, "channels": len(channels), "locked": bool(locked)}
+        return {
+            "queued": True,
+            "channels": len(channels),
+            "locked": self.is_locked(guild_id),
+        }
 
     @staticmethod
     def is_lockdown_exempt(channel) -> bool:
@@ -319,24 +523,51 @@ class Security(commands.Cog):
                 if guild is None:
                     continue
                 everyone = guild.default_role
+                snapshots = await get_security_lockdown_snapshots(guild_id)
+                failed = False
                 for channel_id in channel_ids:
                     channel = guild.get_channel(channel_id)
                     if channel is None:
                         continue
                     try:
                         overwrite = channel.overwrites_for(everyone)
-                        overwrite.send_messages = False if locked else None
-                        overwrite.send_messages_in_threads = False if locked else None
+                        if locked:
+                            if channel_id not in snapshots:
+                                failed = True
+                                logger.error(
+                                    "[SECURITY_LOCKDOWN] لا توجد نسخة صلاحيات "
+                                    "للقناة %s في %s",
+                                    channel_id,
+                                    guild_id,
+                                )
+                                continue
+                            overwrite.send_messages = False
+                            overwrite.send_messages_in_threads = False
+                        else:
+                            original = snapshots.get(channel_id)
+                            if original is None:
+                                failed = True
+                                logger.error(
+                                    "[SECURITY_LOCKDOWN] لا توجد صلاحيات أصلية "
+                                    "للقناة %s في %s",
+                                    channel_id,
+                                    guild_id,
+                                )
+                                continue
+                            # Restore only values still carrying our lockdown
+                            # deny. This leaves later staff edits untouched.
+                            overwrite = restore_lockdown_overwrite(
+                                overwrite, original
+                            )
                         await channel.set_permissions(
                             everyone,
                             overwrite=overwrite,
-                            reason=(
-                                "Emergency security lockdown"
-                                if locked
-                                else "Emergency security lockdown cleared"
-                            ),
+                            reason="Emergency security lockdown"
+                            if locked
+                            else "Emergency security lockdown restored",
                         )
                     except (discord.Forbidden, discord.HTTPException):
+                        failed = True
                         logger.warning(
                             "[SECURITY_LOCKDOWN] فشل تحديث القناة %s في %s",
                             channel_id,
@@ -344,6 +575,25 @@ class Security(commands.Cog):
                             exc_info=True,
                         )
                     await asyncio.sleep(LOCKDOWN_INTERVAL)
+                if locked:
+                    status = "lock_partial" if failed else "locked"
+                elif failed:
+                    status = "unlock_partial"
+                else:
+                    status = "unlocked"
+                if status == "unlocked":
+                    await complete_security_lockdown_unlock(guild_id)
+                else:
+                    await set_security_lockdown_status(guild_id, status)
+                self._lockdown_statuses[guild_id] = status
+                self._lockdown_states[guild_id] = status != "unlocked"
+                if status in {"lock_partial", "unlock_partial"}:
+                    await self._record_incident(
+                        guild_id,
+                        getattr(self.bot, "user", 0) or 0,
+                        "lockdown_partial",
+                        f"{status}:{len(channel_ids)}",
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -355,6 +605,8 @@ class Security(commands.Cog):
         if self._lockdown_worker and not self._lockdown_worker.done():
             self._lockdown_worker.cancel()
         self._lockdown_states.clear()
+        self._lockdown_statuses.clear()
+        self._lockdown_operation_locks.clear()
         self._captcha_views.clear()
 
     def _captcha_view(self, role_id: int) -> CaptchaView:
@@ -417,7 +669,9 @@ class Security(commands.Cog):
             return
 
         count = self._track_threat(guild.id, actor.id)
-        self._record_incident(guild.id, actor, action_type, f"observed:{count}")
+        await self._record_incident(
+            guild.id, actor, action_type, f"observed:{count}"
+        )
         if count <= THREAT_LIMIT:
             return
 
@@ -513,7 +767,7 @@ class Security(commands.Cog):
 
         if lockdown and lockdown.get("queued"):
             mitigation.append(f"lockdown_queued:{lockdown['channels']}")
-        self._record_incident(
+        await self._record_incident(
             guild.id,
             member,
             action_type,

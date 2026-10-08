@@ -227,6 +227,79 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(statuses[2:], [429] * 4)
         self.assertEqual((await database.get_guild_settings(FakeGuild.id))["settings"]["daily_amount"], 501)
 
+    async def test_management_role_map_is_guild_scoped_and_validated(self):
+        invalid = {
+            "revision": 0,
+            "changes": {
+                "management_role_ids": {
+                    "admin": "300000000000000099",
+                    "moderator": "",
+                    "staff": "",
+                }
+            },
+        }
+        status, data = await call(
+            ws.api_post_settings,
+            request("POST", "/x", "s10", invalid, self.headers),
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("management_role_ids", data["fields"])
+
+        role_ids = {
+            "admin": str(ROLES[4].id),
+            "moderator": str(ROLES[2].id),
+            "staff": str(ROLES[1].id),
+        }
+        valid = {
+            "revision": 0,
+            "changes": {"management_role_ids": role_ids},
+        }
+        status, data = await call(
+            ws.api_post_settings,
+            request("POST", "/x", "s10", valid, self.headers),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["management_role_ids"], role_ids)
+        persisted = await database.get_guild_settings(FakeGuild.id)
+        self.assertEqual(persisted["settings"]["management_role_ids"], role_ids)
+
+    async def test_dashboard_management_check_uses_live_guild_roles(self):
+        member = SimpleNamespace(
+            id=11,
+            roles=[ROLES[2]],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        settings = {
+            "management_role_ids": {
+                "admin": str(ROLES[4].id),
+                "moderator": str(ROLES[2].id),
+                "staff": str(ROLES[1].id),
+            }
+        }
+        with (
+            patch.object(
+                ws,
+                "resolve_dashboard_member",
+                new=AsyncMock(return_value=member),
+            ),
+            patch.object(
+                ws,
+                "get_guild_settings",
+                new=AsyncMock(return_value={"settings": settings}),
+            ),
+        ):
+            session = {"id": "11"}
+            self.assertTrue(
+                await ws.live_management_grant(
+                    session, FakeGuild(), "moderator"
+                )
+            )
+            self.assertFalse(
+                await ws.live_management_grant(
+                    session, FakeGuild(), "admin"
+                )
+            )
+
     async def test_meta_marks_roles_the_bot_cannot_assign(self):
         status, meta = await call(ws.api_guild_meta, request("GET", "/x", "s10"))
         assignable = {r["name"]: r["assignable"] for r in meta["roles"]}

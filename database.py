@@ -78,6 +78,11 @@ SETTINGS_SCHEMA: Dict[str, Tuple[str, Any, str]] = {
     "leaderboard_message_id": ("INTEGER", 0, "id"),
     "daily_base_amount": ("INTEGER", 200, "int"),
     "role_multipliers": ("TEXT", {}, "json_map"),
+    "management_role_ids": (
+        "TEXT",
+        {"admin": "", "moderator": "", "staff": ""},
+        "json_map",
+    ),
     "economy_support_role_ids": ("TEXT", [], "json_list"),
     # أعمدة قديمة يتم الإبقاء عليها للتوافق
     "anti_spam_enabled": ("INTEGER", True, "bool"),
@@ -1657,6 +1662,48 @@ async def init_db() -> None:
             # Additive migration for the dedicated audit destinations. Existing
             # columns and rows remain untouched; only missing columns are added.
             await _migrate_logging_channels(db)
+            # Durable security controls are separate additive tables. They do
+            # not rewrite guild settings or any existing moderation records.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS security_incidents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    culprit_id INTEGER NOT NULL,
+                    culprit_name TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    mitigation_taken TEXT NOT NULL,
+                    timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_security_incidents_guild_time "
+                "ON security_incidents(guild_id, id DESC);"
+            )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS security_whitelist (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS security_lockdown_state (
+                    guild_id INTEGER PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'unlocked',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS security_lockdown_overwrites (
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    send_messages INTEGER,
+                    send_messages_in_threads INTEGER,
+                    captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, channel_id)
+                );
+            """)
 
             await db.execute("CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings(guild_id, user_id);")
             await db.execute("""
@@ -5049,6 +5096,235 @@ async def set_logging_channels(
     return dict(snapshot)
 
 
+async def record_security_incident(
+    guild_id: int,
+    culprit_id: int,
+    culprit_name: str,
+    action_type: str,
+    mitigation_taken: str,
+) -> Dict[str, Any]:
+    """Persist one security event without changing legacy audit records."""
+    async with connect(aiosqlite.Row) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO security_incidents
+                (guild_id, culprit_id, culprit_name, action_type, mitigation_taken)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                int(guild_id),
+                int(culprit_id),
+                str(culprit_name),
+                str(action_type),
+                str(mitigation_taken),
+            ),
+        )
+        incident_id = int(cursor.lastrowid)
+        await cursor.close()
+        async with db.execute(
+            "SELECT id, guild_id, culprit_id, culprit_name, action_type, "
+            "mitigation_taken, timestamp FROM security_incidents WHERE id = ?",
+            (incident_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        await db.commit()
+    if row is None:
+        raise RuntimeError("security incident disappeared after insertion")
+    return dict(row)
+
+
+async def get_security_incidents(
+    guild_id: int,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    """Return the newest persisted security events for one guild."""
+    limit = max(1, min(int(limit), 1000))
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT id, guild_id, culprit_id, culprit_name, action_type,
+                   mitigation_taken, timestamp
+            FROM security_incidents
+            WHERE guild_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(guild_id), limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def get_security_whitelist(guild_id: int) -> List[int]:
+    async with connect() as db:
+        async with db.execute(
+            "SELECT user_id FROM security_whitelist "
+            "WHERE guild_id = ? ORDER BY user_id",
+            (int(guild_id),),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [int(row[0]) for row in rows]
+
+
+async def get_all_security_whitelists() -> Dict[int, set[int]]:
+    async with connect() as db:
+        async with db.execute(
+            "SELECT guild_id, user_id FROM security_whitelist "
+            "ORDER BY guild_id, user_id"
+        ) as cursor:
+            rows = await cursor.fetchall()
+    result: Dict[int, set[int]] = {}
+    for guild_id, user_id in rows:
+        result.setdefault(int(guild_id), set()).add(int(user_id))
+    return result
+
+
+async def set_security_whitelist_member(
+    guild_id: int,
+    user_id: int,
+    allowed: bool,
+) -> None:
+    async with connect() as db:
+        if allowed:
+            await db.execute(
+                "INSERT OR IGNORE INTO security_whitelist (guild_id, user_id) "
+                "VALUES (?, ?)",
+                (int(guild_id), int(user_id)),
+            )
+        else:
+            await db.execute(
+                "DELETE FROM security_whitelist WHERE guild_id = ? AND user_id = ?",
+                (int(guild_id), int(user_id)),
+            )
+        await db.commit()
+
+
+def _nullable_permission(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    return int(bool(value))
+
+
+async def save_security_lockdown_snapshots(
+    guild_id: int,
+    snapshots: List[Dict[str, Any]],
+) -> None:
+    """Capture the pre-lock values once; retries must not replace originals."""
+    if not snapshots:
+        return
+    values = [
+        (
+            int(guild_id),
+            int(item["channel_id"]),
+            _nullable_permission(item.get("send_messages")),
+            _nullable_permission(item.get("send_messages_in_threads")),
+        )
+        for item in snapshots
+    ]
+    async with connect() as db:
+        await db.executemany(
+            """
+            INSERT OR IGNORE INTO security_lockdown_overwrites
+                (guild_id, channel_id, send_messages, send_messages_in_threads)
+            VALUES (?, ?, ?, ?)
+            """,
+            values,
+        )
+        await db.commit()
+
+
+async def get_security_lockdown_snapshots(
+    guild_id: int,
+) -> Dict[int, Dict[str, Any]]:
+    async with connect() as db:
+        async with db.execute(
+            """
+            SELECT channel_id, send_messages, send_messages_in_threads
+            FROM security_lockdown_overwrites
+            WHERE guild_id = ?
+            ORDER BY channel_id
+            """,
+            (int(guild_id),),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return {
+        int(channel_id): {
+            "send_messages": None if send_messages is None else bool(send_messages),
+            "send_messages_in_threads": (
+                None
+                if send_messages_in_threads is None
+                else bool(send_messages_in_threads)
+            ),
+        }
+        for channel_id, send_messages, send_messages_in_threads in rows
+    }
+
+
+async def set_security_lockdown_status(guild_id: int, status: str) -> None:
+    status = str(status).strip().lower()
+    if status not in {
+        "unlocked",
+        "locking",
+        "locked",
+        "unlocking",
+        "lock_partial",
+        "unlock_partial",
+    }:
+        raise ValueError("invalid security lockdown status")
+    async with connect() as db:
+        await db.execute(
+            """
+            INSERT INTO security_lockdown_state (guild_id, status, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                status = excluded.status,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (int(guild_id), status),
+        )
+        await db.commit()
+
+
+async def get_security_lockdown_status(guild_id: int) -> str:
+    async with connect() as db:
+        async with db.execute(
+            "SELECT status FROM security_lockdown_state WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return str(row[0]) if row else "unlocked"
+
+
+async def clear_security_lockdown_snapshots(guild_id: int) -> None:
+    async with connect() as db:
+        await db.execute(
+            "DELETE FROM security_lockdown_overwrites WHERE guild_id = ?",
+            (int(guild_id),),
+        )
+        await db.commit()
+
+
+async def complete_security_lockdown_unlock(guild_id: int) -> None:
+    """Atomically mark an unlock complete and remove its restore snapshots."""
+    async with connect() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        await db.execute(
+            "DELETE FROM security_lockdown_overwrites WHERE guild_id = ?",
+            (int(guild_id),),
+        )
+        await db.execute(
+            """
+            INSERT INTO security_lockdown_state (guild_id, status, updated_at)
+            VALUES (?, 'unlocked', CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                status = 'unlocked',
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (int(guild_id),),
+        )
+        await db.commit()
+
+
 def _row_to_settings(guild_id: int, row: Optional[Any]) -> Dict[str, Any]:
     data = dict(row) if row is not None else {}
     settings: Dict[str, Any] = {}
@@ -5075,13 +5351,19 @@ def _row_to_settings(guild_id: int, row: Optional[Any]) -> Dict[str, Any]:
                 value = {}
             if not isinstance(value, dict):
                 value = {}
-            value = {
-                str(key): float(multiplier)
-                for key, multiplier in value.items()
-                if str(key).isdigit()
-                and isinstance(multiplier, (int, float))
-                and 0.0 < float(multiplier) <= 10.0
-            }
+            if key == "management_role_ids":
+                value = {
+                    tier: str(value.get(tier, "") or "")
+                    for tier in ("admin", "moderator", "staff")
+                }
+            else:
+                value = {
+                    str(key): float(multiplier)
+                    for key, multiplier in value.items()
+                    if str(key).isdigit()
+                    and isinstance(multiplier, (int, float))
+                    and 0.0 < float(multiplier) <= 10.0
+                }
         elif kind in ("int", "id"):
             value = int(value)
         settings[key] = value
@@ -5196,6 +5478,28 @@ def validate_setting(key: str, value: Any) -> Any:
     if kind == "json_map":
         if not isinstance(value, dict):
             raise ValueError("يجب أن تكون مضاعفات الرتب في صيغة JSON")
+        if key == "management_role_ids":
+            allowed_tiers = ("admin", "moderator", "staff")
+            if set(value) - set(allowed_tiers):
+                raise ValueError("مستوى الإدارة غير صالح")
+            result = {tier: "" for tier in allowed_tiers}
+            seen = set()
+            for tier in allowed_tiers:
+                raw_id = value.get(tier)
+                if raw_id in (None, ""):
+                    continue
+                role_id = str(raw_id)
+                if (
+                    not role_id.isascii()
+                    or not role_id.isdigit()
+                    or not 15 <= len(role_id) <= 22
+                ):
+                    raise ValueError("معرّف رتبة الإدارة غير صالح")
+                if role_id in seen:
+                    raise ValueError("يجب اختيار رتبة مختلفة لكل مستوى")
+                seen.add(role_id)
+                result[tier] = role_id
+            return result
         result = {}
         for role_id, multiplier in list(value.items())[:100]:
             if not str(role_id).isdigit():

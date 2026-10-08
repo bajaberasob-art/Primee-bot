@@ -29,6 +29,7 @@ from database import (
     save_shortcut,
 )
 from interaction_runtime import InteractionProxy, defer_if_needed
+from management_access import member_has_management_tier
 
 
 HUB_NAME = "➕ اضغط للإنشاء"
@@ -86,6 +87,66 @@ SENSITIVE_COMMAND_NAMES = {
     "unmute",
     "warn",
 }
+ADMIN_COMMAND_MODULES = {
+    "cogs.admin",
+    "cogs.admin_advanced",
+    "cogs.security",
+}
+MODERATOR_COMMAND_MODULES = {
+    "cogs.moderation",
+    "cogs.sanctions_voice",
+}
+ADMIN_COMMAND_NAMES = {
+    "lockdown",
+    "nuke",
+    "set_prefix",
+    "set_setting",
+    "create_channel",
+    "delete_channel",
+    "rename_channel",
+    "move_channel",
+    "set_topic",
+    "sync_perms",
+    "give_points",
+    "take_points",
+}
+STAFF_COMMAND_NAMES = {
+    "give_level",
+    "take_level",
+    "claim",
+    "close",
+    "reopen",
+    "reassign",
+    "ticket_claim",
+    "ticket_close",
+    "ticket_reopen",
+    "ticket_reassign",
+}
+
+
+def command_management_tier(command: Any) -> str | None:
+    """Classify management commands for the additive per-guild role gate."""
+    callback = getattr(command, "callback", None)
+    module = str(getattr(callback, "__module__", ""))
+    name = str(
+        getattr(command, "qualified_name", None)
+        or getattr(command, "name", "")
+    ).lower().split()[-1]
+    if module in ADMIN_COMMAND_MODULES or name in ADMIN_COMMAND_NAMES:
+        return "admin"
+    if module in MODERATOR_COMMAND_MODULES:
+        return "moderator"
+    if name in {"lockdown", "nuke"}:
+        return "admin"
+    if name in SENSITIVE_COMMAND_NAMES:
+        return "moderator"
+    if name in STAFF_COMMAND_NAMES:
+        return "staff"
+    if module == "cogs.tools_channels" and name.startswith(
+        ("create_", "delete_", "rename_", "move_", "set_", "sync_")
+    ):
+        return "admin"
+    return None
 
 
 async def dynamic_prefix(
@@ -576,11 +637,50 @@ class Utilities(commands.Cog):
         await self.sync_auto_responders(guild_id)
         return item
 
+    async def _management_access_reason(
+        self,
+        command: Any,
+        member: Any,
+        guild: discord.Guild,
+    ) -> str | None:
+        required_tier = command_management_tier(command)
+        if required_tier is None:
+            return None
+        try:
+            snapshot = await get_guild_settings(int(guild.id))
+        except Exception:
+            LOGGER.exception(
+                "[MANAGEMENT_ROLES] تعذر تحميل إعدادات الرتب للسيرفر %s",
+                guild.id,
+            )
+            return "⛔ تعذر التحقق من مستوى إدارة PRIME الآن."
+        if member_has_management_tier(
+            member,
+            guild,
+            snapshot.get("settings", {}),
+            required_tier,
+        ):
+            return None
+        labels = {
+            "staff": "Staff",
+            "moderator": "Moderator",
+            "admin": "Admin",
+        }
+        return (
+            f"⛔ يتطلب هذا الأمر رتبة PRIME {labels[required_tier]} "
+            "أو رتبة أعلى."
+        )
+
     async def command_interceptor(self, ctx: commands.Context) -> bool:
         """Apply the guild command matrix before a prefix command is invoked."""
         if ctx.guild is None or ctx.command is None:
             return True
         guild_id = int(ctx.guild.id)
+        reason = await self._management_access_reason(
+            ctx.command, ctx.author, ctx.guild
+        )
+        if reason:
+            raise CommandIntercepted(reason)
         controls = self.command_controls.get(guild_id)
         if controls is None:
             controls = await self._load_command_controls(guild_id)
@@ -635,11 +735,19 @@ class Utilities(commands.Cog):
             await self._send_policy_denial(interaction, environment_error)
             return False
         guild_id = int(interaction.guild.id)
+        command_name = interaction.command.qualified_name.lower()
+        leaf_name = str(getattr(interaction.command, "name", "")).lower()
+        management_reason = await self._management_access_reason(
+            interaction.command,
+            interaction.user,
+            interaction.guild,
+        )
+        if management_reason:
+            await self._send_policy_denial(interaction, management_reason)
+            return False
         controls = self.command_controls.get(guild_id)
         if controls is None:
             controls = await self._load_command_controls(guild_id)
-        command_name = interaction.command.qualified_name.lower()
-        leaf_name = str(getattr(interaction.command, "name", "")).lower()
         control = controls.get(command_name) or controls.get(leaf_name)
         if not control:
             return True

@@ -220,6 +220,7 @@
     "anti_alt_days",
     "captcha_enabled",
     "captcha_role_id",
+    "management_role_ids",
     "auto_role_id",
     "leave_channel_id",
     "member_auto_role_id",
@@ -934,6 +935,30 @@
       else renderDynamic();
     });
     return field(label, n, key, hint);
+  }
+  function managementRoleSelect(tier, label) {
+    const key = "management_role_ids";
+    const select = el("select", { id: `in-management-role-${tier}` });
+    select.append(el("option", { value: "", text: "غير محدد" }));
+    Object.values(window.guildRoles)
+      .sort((a, b) => Number(b.position || 0) - Number(a.position || 0))
+      .forEach((role) => {
+        select.append(el("option", { value: String(role.id), text: role.name }));
+      });
+    const current = state.draft.management_role_ids || {};
+    select.value = String(current[tier] || "");
+    select.addEventListener("change", () => {
+      state.draft.management_role_ids = {
+        admin: "",
+        moderator: "",
+        staff: "",
+        ...(state.draft.management_role_ids || {}),
+        [tier]: select.value,
+      };
+      state.fields[key] = "";
+      renderDynamic();
+    });
+    return field(label, select, key);
   }
   function multiSettingSelect(key, label, type, hint = "") {
     const choices =
@@ -5946,6 +5971,25 @@
       input("anti_alt_days", "عمر الحساب الأدنى (أيام)", "number", { min: "0", max: "365" }),
       selector("captcha_role_id", "رتبة اجتياز الكابتشا", "role"),
       selector("log_channel_id", "قناة السجل", "channel"),
+    );
+    const managementRoles = el("div", { class: "fields security-rule-grid" });
+    managementRoles.append(
+      managementRoleSelect("admin", "رتبة PRIME Admin"),
+      managementRoleSelect("moderator", "رتبة PRIME Moderator"),
+      managementRoleSelect("staff", "رتبة PRIME Staff"),
+      el("p", {
+        class: "hint wide",
+        text: "المالك وAdministrator يُحددان من Discord. هذه الرتب تضيف شروط PRIME فقط ولا تمنح صلاحيات Discord؛ تبقى صلاحيات Discord وترتيب الرتب شرطاً لكل إجراء. إذا تركت المستويات فارغة يستمر السلوك الحالي.",
+      }),
+    );
+    protect.append(
+      securityAccordion(
+        "management-roles",
+        "مستويات إدارة PRIME",
+        "ربط رتبة مستقلة بكل مستوى في هذا السيرفر",
+        managementRoles,
+        false,
+      ),
     );
     const econ = el("div", { class: "fields" }),
       tax = input("economy_tax", "ضريبة الاقتصاد", "number", { min: "0", max: "100", step: "0.5" });

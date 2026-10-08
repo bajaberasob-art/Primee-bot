@@ -88,6 +88,7 @@ from database import (
     add_broadcast_log,
     get_recent_broadcast_logs,
 )
+from management_access import member_has_management_tier
 from cogs.command_meta import (
     AUTO_DELETE_PRESETS,
     MASTER_COMMANDS_REGISTRY,
@@ -157,6 +158,20 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _DISCORD_TOKEN_RE = re.compile(r"<(?:a?):[A-Za-z0-9_~]+:\d+>|<@!?\d+>|<#\d+>|<@&\d+>")
 _SENSITIVE_PATH_RE = re.compile(r"(backup|purge|mass|reset|delete|lockdown)", re.IGNORECASE)
 logger = logging.getLogger("DashboardOAuth")
+
+
+async def _await_if_needed(value):
+    """Keep dashboard adapters compatible with async cogs and test doubles."""
+    if hasattr(value, "__await__"):
+        return await value
+    return value
+
+
+async def _security_incident_rows(security, guild_id: int):
+    getter = getattr(security, "get_persisted_incidents", None)
+    if callable(getter):
+        return await _await_if_needed(getter(guild_id))
+    return security.get_incidents(guild_id)
 
 
 def prune_expired():
@@ -1033,7 +1048,32 @@ async def live_level_admin(session, guild) -> bool:
     return bool(member and is_level_admin(member, guild))
 
 
-async def authorize(req, *, write: bool = False):
+async def live_management_grant(session, guild, required_tier: str) -> bool:
+    """Apply the additive PRIME tier map to live dashboard operators."""
+    if session.get("_local_dev"):
+        return True
+    try:
+        member = await resolve_dashboard_member(guild, int(session["id"]))
+        if member is None:
+            return False
+        snapshot = await get_guild_settings(int(guild.id))
+        return member_has_management_tier(
+            member, guild, snapshot.get("settings", {}), required_tier
+        )
+    except Exception:
+        logger.exception(
+            "Could not verify PRIME management role for guild %s",
+            getattr(guild, "id", "unknown"),
+        )
+        return False
+
+
+async def authorize(
+    req,
+    *,
+    write: bool = False,
+    management_tier: str | None = None,
+):
     """يعيد (session, guild) أو يرفع HTTPException. لا يُوثق أي شيء من جهة العميل."""
     session = current_session(req)
     if not session:
@@ -1049,6 +1089,13 @@ async def authorize(req, *, write: bool = False):
     if not await live_grant(session, guild):
         session["guilds"] = [g for g in session["guilds"] if g["id"] != raw]
         raise web.HTTPForbidden(text=json.dumps({"error": "forbidden"}), content_type="application/json")
+    if management_tier and not await live_management_grant(
+        session, guild, management_tier
+    ):
+        raise web.HTTPForbidden(
+            text=json.dumps({"error": "management_role_denied"}),
+            content_type="application/json",
+        )
     if write and (not same_origin(req) or not csrf_ok(req, session)):
         raise web.HTTPForbidden(text=json.dumps({"error": "csrf"}), content_type="application/json")
     limit_key = ("save" if write else "read", session["id"], guild.id)
@@ -1272,6 +1319,26 @@ async def validate_changes(guild, changes: dict) -> tuple[dict, dict]:
         except ValueError as error:
             errors[key] = str(error)
             continue
+        if key == "management_role_ids":
+            invalid_tier = None
+            for tier, raw_id in value.items():
+                if not raw_id:
+                    continue
+                role = guild.get_role(int(raw_id))
+                if role is None or bool(getattr(role, "is_default", lambda: False)()):
+                    invalid_tier = tier
+                    break
+            configured_ids = [
+                role_id for role_id in value.values() if role_id
+            ]
+            if invalid_tier:
+                errors[key] = (
+                    f"رتبة مستوى {invalid_tier} غير موجودة في هذا السيرفر"
+                )
+                continue
+            if len(configured_ids) != len(set(configured_ids)):
+                errors[key] = "يجب اختيار رتبة مختلفة لكل مستوى"
+                continue
         if value is not None and key.endswith("_channel_id"):
             channel = await resolve_text_channel(guild, value)
             if channel is None:
@@ -2066,7 +2133,7 @@ async def api_test_log_channel(req):
 async def api_guild_actions(req):
     _, guild = await authorize(req)
     security = _security_cog()
-    incidents = security.get_incidents(guild.id) if security else []
+    incidents = await _security_incident_rows(security, guild.id) if security else []
     warnings = await get_recent_warnings(guild.id, 50)
     actions = [
         {
@@ -2097,6 +2164,15 @@ async def api_guild_action(req):
     session, guild = await authorize(req, write=True)
     body = await read_json_body(req)
     action = str(body.get("action", "")).strip()
+    required_tier = {
+        "lockdown": "admin",
+        "revoke_warning": "moderator",
+        "quick_unmute": "moderator",
+    }.get(action)
+    if required_tier and not await live_management_grant(
+        session, guild, required_tier
+    ):
+        return json_error(403, "management_role_denied")
     result: dict
     if action == "lockdown":
         security = _security_cog()
@@ -4377,7 +4453,7 @@ async def api_security_incidents(req):
         return json_error(503, "security_unavailable")
     return web.json_response({
         "guild_id": str(guild.id),
-        "incidents": security.get_incidents(guild.id),
+        "incidents": await _security_incident_rows(security, guild.id),
         "whitelist": security.get_whitelist(guild.id),
         "locked": security.is_locked(guild.id),
         "protected_channels": security.get_lockdown_exemptions(guild.id),
@@ -4387,7 +4463,9 @@ async def api_security_incidents(req):
 @routes.post('/api/guilds/{guild_id}/security/lockdown')
 @routes.post('/api/guild/{guild_id}/security/lockdown')
 async def api_security_lockdown(req):
-    session, guild = await authorize(req, write=True)
+    session, guild = await authorize(
+        req, write=True, management_tier="admin"
+    )
     security = bot_ref.get_cog("Security") if bot_ref else None
     if security is None:
         return json_error(503, "security_unavailable")
@@ -4412,19 +4490,21 @@ async def api_security_lockdown(req):
         if result["queued"]
         else "queue_rejected"
     )
-    security.record_control_action(
+    await _await_if_needed(security.record_control_action(
         guild.id,
         int(session["id"]),
         session.get("username", session["id"]),
         "dashboard_lockdown" if locked else "dashboard_unlock",
         mitigation,
-    )
+    ))
     return web.json_response({"ok": result["queued"], **result})
 
 
 @routes.post('/api/guild/{guild_id}/security/whitelist')
 async def api_security_whitelist(req):
-    session, guild = await authorize(req, write=True)
+    session, guild = await authorize(
+        req, write=True, management_tier="admin"
+    )
     security = bot_ref.get_cog("Security") if bot_ref else None
     if security is None:
         return json_error(503, "security_unavailable")
@@ -4452,16 +4532,18 @@ async def api_security_whitelist(req):
     if action == "add" and not member.guild_permissions.administrator:
         return json_error(400, "validation", fields={"user_id": "يجب أن يملك العضو صلاحية Administrator"})
     if action == "add":
-        security.whitelist_member(guild.id, user_id)
+        await _await_if_needed(security.whitelist_member(guild.id, user_id))
     else:
-        security.remove_whitelisted_member(guild.id, user_id)
-    security.record_control_action(
+        await _await_if_needed(
+            security.remove_whitelisted_member(guild.id, user_id)
+        )
+    await _await_if_needed(security.record_control_action(
         guild.id,
         int(session["id"]),
         session.get("username", session["id"]),
         f"dashboard_whitelist_{action}",
         f"user:{user_id}",
-    )
+    ))
     return web.json_response({
         "ok": True,
         "action": action,

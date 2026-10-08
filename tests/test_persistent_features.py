@@ -1,8 +1,10 @@
 import asyncio
 import os
 import unittest
+from types import SimpleNamespace
 
 import database
+from cogs.security import restore_lockdown_overwrite
 from cogs.economy import LiveGiveaway
 from cogs.tournaments import TournamentEntryView
 
@@ -53,6 +55,84 @@ class PersistentFeatureTests(unittest.IsolatedAsyncioTestCase):
         started = await database.start_tournament(tournament_id)
         self.assertEqual(started["entries"], [11, 22])
         self.assertIsNone(await database.start_tournament(tournament_id))
+
+    async def test_security_controls_persist_and_keep_original_overwrites(self):
+        incident = await database.record_security_incident(
+            700, 55, "moderator", "emergency_lockdown", "queued:locked:2"
+        )
+        self.assertEqual(
+            (incident["guild_id"], incident["culprit_id"], incident["action_type"]),
+            (700, 55, "emergency_lockdown"),
+        )
+        self.assertEqual(
+            (await database.get_security_incidents(700))[0]["id"],
+            incident["id"],
+        )
+
+        await database.set_security_whitelist_member(700, 55, True)
+        self.assertEqual(await database.get_security_whitelist(700), [55])
+        await database.set_security_whitelist_member(700, 55, False)
+        self.assertEqual(await database.get_security_whitelist(700), [])
+
+        originals = [
+            {
+                "channel_id": 301,
+                "send_messages": None,
+                "send_messages_in_threads": False,
+            },
+            {
+                "channel_id": 302,
+                "send_messages": True,
+                "send_messages_in_threads": None,
+            },
+        ]
+        await database.save_security_lockdown_snapshots(700, originals)
+        await database.save_security_lockdown_snapshots(
+            700,
+            [{
+                "channel_id": 301,
+                "send_messages": True,
+                "send_messages_in_threads": True,
+            }],
+        )
+        self.assertEqual(
+            await database.get_security_lockdown_snapshots(700),
+            {
+                301: {
+                    "send_messages": None,
+                    "send_messages_in_threads": False,
+                },
+                302: {
+                    "send_messages": True,
+                    "send_messages_in_threads": None,
+                },
+            },
+        )
+
+        await database.set_security_lockdown_status(700, "locked")
+        self.assertEqual(await database.get_security_lockdown_status(700), "locked")
+        await database.complete_security_lockdown_unlock(700)
+        self.assertEqual(
+            await database.get_security_lockdown_status(700), "unlocked"
+        )
+        self.assertEqual(await database.get_security_lockdown_snapshots(700), {})
+
+    def test_unlock_restores_only_values_still_owned_by_lockdown(self):
+        overwrite = SimpleNamespace(
+            send_messages=False,
+            send_messages_in_threads=True,
+            embed_links=False,
+        )
+        restored = restore_lockdown_overwrite(
+            overwrite,
+            {
+                "send_messages": None,
+                "send_messages_in_threads": False,
+            },
+        )
+        self.assertIsNone(restored.send_messages)
+        self.assertTrue(restored.send_messages_in_threads)
+        self.assertFalse(restored.embed_links)
 
     async def test_economy_transfer_is_atomic_and_logged(self):
         await database.get_or_create_user(1, 700)

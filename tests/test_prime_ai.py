@@ -4173,6 +4173,37 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(validated["step"]["tool"], "send_message")
 
+    async def test_management_role_map_adds_a_gate_without_bypassing_discord_permissions(self):
+        guild, actor, channel, bot, _channels, _members = self._runtime_context()
+        actor.guild_permissions = SimpleNamespace(
+            administrator=False,
+            manage_roles=True,
+        )
+        actor.roles = [ROLES[1]]
+        await database.update_guild_settings(
+            guild.id,
+            management_role_ids={
+                "admin": str(ROLES[4].id),
+                "moderator": str(ROLES[2].id),
+                "staff": str(ROLES[1].id),
+            },
+        )
+        config = self._action_config("create_role")
+        step = {"tool": "create_role", "arguments": {"name": "new-role"}}
+
+        with self.assertRaisesRegex(
+            prime_ai_runtime.AccessDenied, "management_role_denied"
+        ):
+            await prime_ai_runtime.validate_action_policy(
+                bot, guild, actor, channel, step, config
+            )
+
+        actor.roles = [ROLES[4]]
+        validated = await prime_ai_runtime.validate_action_policy(
+            bot, guild, actor, channel, step, config
+        )
+        self.assertEqual(validated["step"]["tool"], "create_role")
+
     async def test_administrator_cannot_bypass_discord_requester_or_bot_hierarchy(self):
         guild, actor, channel, bot, _channels, members = self._runtime_context()
         actor.top_role = ROLES[1]
