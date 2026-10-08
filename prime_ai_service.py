@@ -5,26 +5,33 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import time
-from contextlib import asynccontextmanager
-from collections import deque
 from datetime import datetime, timezone
-from urllib.parse import quote
 import aiohttp
 import aiosqlite
 
 import database
 import prime_ai_control
+from prime_ai.concurrency import BoundedProviderGate as _BoundedProviderGate
+from prime_ai.errors import (
+    AISettingsConflict,
+    AISettingsDisabled,
+    AIChannelDenied,
+    AIProviderUnavailable,
+    AIMemoryCandidateRejected,
+    AIMemoryLimitReached,
+)
+from prime_ai.text import sanitize_discord_text
+from prime_ai.providers import (
+    GeminiProvider, PollinationsProvider, PROVIDER_NAME, PROVIDER_MODEL,
+    FALLBACK_PROVIDER_MODEL, RETRYABLE_PROVIDER_STATUSES,
+    FALLBACK_PROVIDER_STATUSES, complete_with_retries, request_with_fallback,
+)
+from prime_ai.limits import SlidingWindowLimiter
 
 LOGGER = logging.getLogger("PrimeAI")
 
-PROVIDER_NAME = "Google Gemini"
-PROVIDER_MODEL = "gemini-3.8-flash"
-FALLBACK_PROVIDER_MODEL = "gemini-3.1-flash-lite"
-RETRYABLE_PROVIDER_STATUSES = frozenset({408, 425, 500, 502, 503, 504})
-FALLBACK_PROVIDER_STATUSES = frozenset({429, 500, 502, 503, 504})
 MAX_SYSTEM_PROMPT = 1500
 MAX_MEMORY_LENGTH = 1000
 MAX_MEMORIES_PER_GUILD = 100
@@ -43,283 +50,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "النتيجة."
 )
 
-class AISettingsConflict(RuntimeError):
-    def __init__(self, current: dict):
-        super().__init__("PRIME AI settings changed")
-        self.current = current
-
-
-class AISettingsDisabled(RuntimeError):
-    pass
-
-
-class AIChannelDenied(RuntimeError):
-    pass
-
-
-class AIProviderUnavailable(RuntimeError):
-    def __init__(
-        self,
-        message: str,
-        *,
-        retryable: bool = False,
-        status_code: int | None = None,
-    ):
-        super().__init__(message)
-        self.retryable = bool(retryable)
-        self.status_code = status_code
-
-
-class _BoundedProviderGate:
-    """Bound provider concurrency and reject excess work instead of hoarding tasks."""
-
-    def __init__(
-        self,
-        *,
-        max_active: int = 8,
-        max_waiting: int = 32,
-        queue_timeout: float = 8.0,
-    ):
-        self.max_active = max(1, int(max_active))
-        self.max_waiting = max(0, int(max_waiting))
-        self.queue_timeout = max(0.1, float(queue_timeout))
-        self._active = 0
-        self._waiters: deque[asyncio.Future] = deque()
-        self._lock = asyncio.Lock()
-
-    async def acquire(self) -> None:
-        loop = asyncio.get_running_loop()
-        async with self._lock:
-            if self._active < self.max_active and not self._waiters:
-                self._active += 1
-                return
-            if len(self._waiters) >= self.max_waiting:
-                raise AIProviderUnavailable("provider_busy", status_code=503)
-            waiter = loop.create_future()
-            self._waiters.append(waiter)
-
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(waiter),
-                timeout=self.queue_timeout,
-            )
-        except asyncio.TimeoutError as error:
-            await self._remove_waiter(waiter)
-            raise AIProviderUnavailable(
-                "provider_queue_timeout", status_code=503
-            ) from error
-        except asyncio.CancelledError:
-            await self._remove_waiter(waiter)
-            raise
-
-    async def _remove_waiter(self, waiter: asyncio.Future) -> None:
-        async with self._lock:
-            try:
-                self._waiters.remove(waiter)
-            except ValueError:
-                # A slot was handed to this waiter just as it timed out/cancelled.
-                if waiter.done() and not waiter.cancelled():
-                    self._release_locked()
-
-    def _release_locked(self) -> None:
-        while self._waiters:
-            waiter = self._waiters.popleft()
-            if waiter.done():
-                continue
-            waiter.set_result(None)
-            return
-        self._active = max(0, self._active - 1)
-
-    async def release(self) -> None:
-        async with self._lock:
-            self._release_locked()
-
-    @asynccontextmanager
-    async def slot(self):
-        await self.acquire()
-        try:
-            yield
-        finally:
-            await self.release()
-
-
 _PROVIDER_GATE = _BoundedProviderGate()
-
-
-class AIMemoryCandidateRejected(ValueError):
-    pass
-
-
-class PollinationsProvider:
-    """Image URL helper for the existing Pollinations image command."""
-
-    image_endpoint = "https://image.pollinations.ai/prompt"
-
-    @staticmethod
-    def image_url(prompt: str, *, width: int = 800, height: int = 600) -> str:
-        value = str(prompt or "").strip()
-        if not value:
-            raise ValueError("invalid_image_prompt")
-        if (
-            isinstance(width, bool)
-            or not isinstance(width, int)
-            or not 64 <= width <= 2048
-            or isinstance(height, bool)
-            or not isinstance(height, int)
-            or not 64 <= height <= 2048
-        ):
-            raise ValueError("invalid_image_dimensions")
-        return (
-            f"{PollinationsProvider.image_endpoint}/{quote(value, safe='')}"
-            f"?width={width}&height={height}&nologo=true"
-        )
-
-
-class GeminiProvider:
-    """Gemini REST adapter for PRIME AI text generation."""
-
-    api_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/"
-
-    @staticmethod
-    def _request_body(payload: dict) -> dict:
-        messages = payload.get("messages", [])
-        system_text = "\n\n".join(
-            str(item.get("content", "")).strip()
-            for item in messages
-            if item.get("role") == "system" and str(item.get("content", "")).strip()
-        )
-        contents = []
-        for item in messages:
-            role = item.get("role")
-            if role not in {"user", "assistant"}:
-                continue
-            text = str(item.get("content", "")).strip()
-            if not text:
-                continue
-            gemini_role = "model" if role == "assistant" else "user"
-            if contents and contents[-1]["role"] == gemini_role:
-                contents[-1]["parts"][0]["text"] += "\n" + text
-            else:
-                contents.append({
-                    "role": gemini_role,
-                    "parts": [{"text": text}],
-                })
-        request_body = {
-            "contents": contents,
-            "generationConfig": {
-                "temperature": payload.get("temperature", 0.7),
-                "maxOutputTokens": payload.get("max_tokens", 1200),
-                "thinkingConfig": {
-                    "thinkingLevel": str(
-                        payload.get("thinking_level", "medium")
-                    ).lower(),
-                },
-            },
-        }
-        if system_text:
-            request_body["systemInstruction"] = {"parts": [{"text": system_text}]}
-        return request_body
-
-    async def complete(
-        self,
-        session: aiohttp.ClientSession,
-        payload: dict,
-        *,
-        timeout_seconds: int,
-    ) -> tuple[str, int | None]:
-        api_key = os.getenv("GEMINI_API_KEY", "").strip()
-        if not api_key:
-            raise AIProviderUnavailable("gemini_api_key_missing")
-        model = str(payload.get("model") or PROVIDER_MODEL).strip()
-        if not model or len(model) > 100:
-            raise AIProviderUnavailable("gemini_model_invalid")
-        streaming = bool(payload.get("stream"))
-        action = "streamGenerateContent" if streaming else "generateContent"
-        url = f"{self.api_endpoint}{quote(model, safe='-._')}:{action}"
-        headers = {
-            "Accept": "text/event-stream" if streaming else "application/json",
-            "x-goog-api-key": api_key,
-        }
-        request_options = {
-            "json": self._request_body(payload),
-            "headers": headers,
-            "timeout": aiohttp.ClientTimeout(
-                total=timeout_seconds,
-                connect=min(8, timeout_seconds),
-            ),
-        }
-        if streaming:
-            request_options["params"] = {"alt": "sse"}
-        async with session.post(url, **request_options) as response:
-            if response.status != 200:
-                raise AIProviderUnavailable(
-                    f"gemini_status_{response.status}",
-                    retryable=response.status in RETRYABLE_PROVIDER_STATUSES,
-                    status_code=response.status,
-                )
-            try:
-                tokens_used = None
-                if streaming:
-                    chunks = []
-                    while True:
-                        raw_line = await response.content.readline()
-                        if not raw_line:
-                            break
-                        line = raw_line.decode("utf-8", errors="ignore").strip()
-                        if not line.startswith("data:"):
-                            continue
-                        content = line[5:].strip()
-                        if content == "[DONE]":
-                            break
-                        try:
-                            event = json.loads(content)
-                            candidates = event.get("candidates", [])
-                            if candidates:
-                                parts = candidates[0].get("content", {}).get("parts", [])
-                                chunks.extend(
-                                    part["text"]
-                                    for part in parts
-                                    if isinstance(part, dict)
-                                    and isinstance(part.get("text"), str)
-                                )
-                            usage = event.get("usageMetadata", {})
-                            if isinstance(usage, dict):
-                                tokens_used = usage.get("totalTokenCount", tokens_used)
-                        except (ValueError, TypeError, KeyError, IndexError):
-                            continue
-                    answer = "".join(chunks)
-                else:
-                    data = await response.json(content_type=None)
-                    if not isinstance(data, dict):
-                        raise AIProviderUnavailable("gemini_invalid_response")
-                    candidates = data.get("candidates", [])
-                    if not isinstance(candidates, list) or not candidates:
-                        raise AIProviderUnavailable("gemini_no_text_candidate")
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    answer = "".join(
-                        part["text"]
-                        for part in parts
-                        if isinstance(part, dict)
-                        and isinstance(part.get("text"), str)
-                    )
-                    usage = data.get("usageMetadata", {})
-                    if isinstance(usage, dict):
-                        tokens_used = usage.get("totalTokenCount")
-            except AIProviderUnavailable:
-                raise
-            except aiohttp.ClientError:
-                raise
-            except (
-                ValueError,
-                TypeError,
-                KeyError,
-                IndexError,
-                AttributeError,
-            ) as error:
-                raise AIProviderUnavailable("gemini_invalid_response") from error
-        if not isinstance(answer, str):
-            raise AIProviderUnavailable("gemini_invalid_response")
-        return answer.strip(), tokens_used
 
 
 POLLINATIONS_PROVIDER = PollinationsProvider()
@@ -333,51 +64,20 @@ async def _complete_with_retries(
     timeout_seconds: int,
     retry_count: int,
 ) -> tuple[str, int | None]:
-    # Keep provider outages from turning one user request into a long retry storm.
-    retries = max(0, min(int(retry_count), 1))
-    for attempt in range(retries + 1):
-        try:
-            return await GEMINI_PROVIDER.complete(
-                session,
-                payload,
-                timeout_seconds=timeout_seconds,
-            )
-        except AIProviderUnavailable as error:
-            if not error.retryable or attempt >= retries:
-                raise
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            if attempt >= retries:
-                raise
-        await asyncio.sleep(min(0.5 * (2 ** attempt), 2.0))
-    raise AIProviderUnavailable("provider_request_failed")
+    return await complete_with_retries(
+        session, payload, provider=GEMINI_PROVIDER,
+        timeout_seconds=timeout_seconds, retry_count=retry_count,
+    )
 
 
-class AIMemoryLimitReached(RuntimeError):
-    pass
-
-
-_RATE_BUCKETS: dict[tuple[str, int, int], deque[float]] = {}
+_RATE_LIMITER = SlidingWindowLimiter()
+_RATE_BUCKETS = _RATE_LIMITER.buckets
 MAX_RATE_BUCKETS = 20000
 RATE_BUCKET_CLEANUP_SECONDS = 60.0
-_RATE_BUCKETS_LAST_CLEANUP = 0.0
-_DISCORD_MEMBER_MENTION = re.compile(r"<@!?\d{15,22}>")
-_DISCORD_ROLE_MENTION = re.compile(r"<@&\d{15,22}>")
-_DISCORD_CHANNEL_MENTION = re.compile(r"<#\d{15,22}>")
-_DISCORD_EMOJI = re.compile(r"<a?:([A-Za-z0-9_]{1,64}):\d{15,22}>")
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def sanitize_discord_text(value: object, limit: int) -> str:
-    """Replace opaque Discord mention tokens before provider transmission."""
-    text = str(value or "").strip()
-    text = _DISCORD_MEMBER_MENTION.sub("[عضو مشار إليه]", text)
-    text = _DISCORD_ROLE_MENTION.sub("[رتبة مشار إليها]", text)
-    text = _DISCORD_CHANNEL_MENTION.sub("[قناة مشار إليها]", text)
-    text = _DISCORD_EMOJI.sub(r":\1:", text)
-    return text[:max(0, int(limit))]
 
 
 def _default_settings() -> dict:
@@ -819,6 +519,14 @@ async def delete_user_memory(
 
 async def forget_user_data(guild_id: int, user_id: int) -> dict:
     """Delete the caller's private memories, profile, and saved conversation turns."""
+    from prime_ai.conversation import CONVERSATION_STATE
+
+    CONVERSATION_STATE.clear_user(guild_id, user_id)
+    async with CONVERSATION_STATE.mutation_lock_for(guild_id, user_id):
+        return await _forget_user_storage(guild_id, user_id)
+
+
+async def _forget_user_storage(guild_id: int, user_id: int) -> dict:
     import prime_ai_intelligence
     import prime_ai_persistence
 
@@ -1334,28 +1042,13 @@ def allow_request(
     window_seconds: float = 60,
 ) -> float:
     """Return remaining retry seconds, or 0 when an AI request is allowed."""
-    global _RATE_BUCKETS_LAST_CLEANUP
     now = time.monotonic()
     key = (str(action), int(guild_id), int(actor_id))
-    bucket = _RATE_BUCKETS.get(key)
-    if bucket is None:
-        if len(_RATE_BUCKETS) >= MAX_RATE_BUCKETS:
-            if now - _RATE_BUCKETS_LAST_CLEANUP >= RATE_BUCKET_CLEANUP_SECONDS:
-                for stale_key, stale_bucket in list(_RATE_BUCKETS.items()):
-                    if not stale_bucket or now - stale_bucket[-1] > 3600:
-                        _RATE_BUCKETS.pop(stale_key, None)
-                _RATE_BUCKETS_LAST_CLEANUP = now
-            if len(_RATE_BUCKETS) >= MAX_RATE_BUCKETS:
-                # Fail closed for new identities rather than growing memory without
-                # bound or evicting active users' rate-limit history.
-                return max(1.0, float(window_seconds))
-        bucket = _RATE_BUCKETS.setdefault(key, deque())
-    while bucket and now - bucket[0] >= window_seconds:
-        bucket.popleft()
-    if len(bucket) >= limit:
-        return max(0.0, window_seconds - (now - bucket[0]))
-    bucket.append(now)
-    return 0.0
+    return _RATE_LIMITER.allow(
+        key, now=now, limit=limit, window_seconds=float(window_seconds),
+        max_buckets=MAX_RATE_BUCKETS,
+        cleanup_seconds=RATE_BUCKET_CLEANUP_SECONDS,
+    )
 
 
 def _approved_user_preferences(memories: list[dict]) -> dict:
@@ -1883,6 +1576,23 @@ async def generate_response(
         "stream": bool(config.get("response", {}).get("streaming", False)),
     }
 
+    async def record_outcome(result: str, details: str, tokens_used=None):
+        if guild_id is None:
+            return
+        # Mandatory audit remains fail-closed; optional metrics may not mask it.
+        await record_audit(
+            guild_id, actor_id, audit_action,
+            "نجح" if result == "success" else "فشل", details,
+        )
+        try:
+            await prime_ai_control.record_request(
+                guild_id, actor_id, channel_id, skill=skill, mode=mode,
+                result=result, latency_ms=int((time.monotonic() - started) * 1000),
+                tokens_used=tokens_used,
+            )
+        except Exception:
+            LOGGER.debug("Failed to record PRIME AI request metrics.", exc_info=True)
+
     tokens_used = None
     try:
         retry_count = int(provider.get("retry_count", 0))
@@ -1890,105 +1600,29 @@ async def generate_response(
             3, min(int(provider.get("timeout_seconds", 30)), 30)
         )
         async with _PROVIDER_GATE.slot():
-            try:
-                answer, tokens_used = await _complete_with_retries(
-                    session,
-                    payload,
-                    timeout_seconds=timeout_seconds,
-                    retry_count=retry_count,
-                )
-            except AIProviderUnavailable as primary_error:
-                if (
-                    primary_error.status_code not in FALLBACK_PROVIDER_STATUSES
-                    or payload["model"] == FALLBACK_PROVIDER_MODEL
-                ):
-                    raise
-                LOGGER.warning(
-                    "[AI] Gemini model %s stayed unavailable; retrying with same-provider model %s.",
-                    payload["model"],
-                    FALLBACK_PROVIDER_MODEL,
-                )
-                payload["model"] = FALLBACK_PROVIDER_MODEL
-                answer, tokens_used = await _complete_with_retries(
-                    session,
-                    payload,
-                    timeout_seconds=timeout_seconds,
-                    retry_count=0,
-                )
-    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
-        if guild_id is not None:
-            await record_audit(
-                guild_id,
-                actor_id,
-                audit_action,
-                "فشل",
-                "تعذر الاتصال بمزوّد الذكاء الاصطناعي.",
+            answer, tokens_used = await request_with_fallback(
+                session, payload, timeout_seconds=timeout_seconds,
+                retry_count=retry_count, complete=_complete_with_retries,
+                logger=LOGGER,
             )
-            try:
-                await prime_ai_control.record_request(
-                    guild_id, actor_id, channel_id, skill=skill, mode=mode,
-                    result="failed", latency_ms=int((time.monotonic() - started) * 1000),
-                )
-            except Exception:
-                LOGGER.debug("Failed to record PRIME AI provider failure.", exc_info=True)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+        await record_outcome("failed", "تعذر الاتصال بمزوّد الذكاء الاصطناعي.")
         raise AIProviderUnavailable("provider_request_failed") from error
     except AIProviderUnavailable as error:
-        if guild_id is not None:
-            await record_audit(
-                guild_id,
-                actor_id,
-                audit_action,
-                "فشل",
-                f"provider={PROVIDER_NAME} · reason={str(error)[:80]}",
-            )
-            try:
-                await prime_ai_control.record_request(
-                    guild_id, actor_id, channel_id, skill=skill, mode=mode,
-                    result="failed", latency_ms=int((time.monotonic() - started) * 1000),
-                )
-            except Exception:
-                LOGGER.debug("Failed to record PRIME AI provider failure.", exc_info=True)
+        await record_outcome(
+            "failed", f"provider={PROVIDER_NAME} · reason={str(error)[:80]}",
+        )
         raise
 
     if not answer:
-        if guild_id is not None:
-            await record_audit(
-                guild_id,
-                actor_id,
-                audit_action,
-                "فشل",
-                "أعاد مزوّد الذكاء الاصطناعي إجابة فارغة.",
-            )
-            try:
-                await prime_ai_control.record_request(
-                    guild_id, actor_id, channel_id, skill=skill, mode=mode,
-                    result="failed", latency_ms=int((time.monotonic() - started) * 1000),
-                )
-            except Exception:
-                LOGGER.debug("Failed to record PRIME AI empty-response failure.", exc_info=True)
+        await record_outcome("failed", "أعاد مزوّد الذكاء الاصطناعي إجابة فارغة.")
         raise AIProviderUnavailable("provider_empty_response")
 
     answer = answer[:max(1, min(max_length, MAX_ANSWER_LENGTH))]
-    if guild_id is not None:
-        await record_audit(
-            guild_id,
-            actor_id,
-            audit_action,
-            "نجح",
-            f"provider={PROVIDER_NAME} · model={payload['model']} · "
-            f"prompt_chars={len(value)} · answer_chars={len(answer)}",
-        )
-        try:
-            await prime_ai_control.record_request(
-                guild_id,
-                actor_id,
-                channel_id,
-                skill=skill,
-                mode=mode,
-                result="success",
-                latency_ms=int((time.monotonic() - started) * 1000),
-                tokens_used=tokens_used,
-            )
-        except Exception:
-            LOGGER.debug("Failed to record PRIME AI request metrics.", exc_info=True)
+    await record_outcome(
+        "success",
+        f"provider={PROVIDER_NAME} · model={payload['model']} · "
+        f"prompt_chars={len(value)} · answer_chars={len(answer)}",
+        tokens_used=tokens_used,
+    )
     return answer

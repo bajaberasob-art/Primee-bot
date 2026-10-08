@@ -7,6 +7,7 @@ stored in PostgreSQL when DATABASE_URL is configured.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ _SAFE_TOPIC_KEYS = {
 }
 
 _pool: asyncpg.Pool | None = None
+_POOL_LOCK = asyncio.Lock()
 _DISABLED_FOR_TESTS = os.environ.get("PRIME_AI_DISABLE_DURABLE_STORE") == "1"
 
 
@@ -98,45 +100,51 @@ async def start_durable_store() -> bool:
     global _pool
     if _DISABLED_FOR_TESTS or not os.environ.get("DATABASE_URL"):
         return False
-    if _pool is not None:
+    async with _POOL_LOCK:
+        if _pool is not None:
+            return True
+        pool = await asyncpg.create_pool(
+            dsn=os.environ["DATABASE_URL"],
+            min_size=1,
+            max_size=5,
+            command_timeout=15,
+        )
+        try:
+            required = (
+                "prime_ai_conversation_turns",
+                "prime_ai_durable_memories",
+                "prime_ai_durable_profiles",
+                "prime_ai_durable_memory_revisions",
+            )
+            async with pool.acquire() as conn:
+                found = await conn.fetch(
+                    "SELECT tablename FROM pg_tables "
+                    "WHERE schemaname = 'public' AND tablename = ANY($1::text[])",
+                    list(required),
+                )
+            found_names = {row["tablename"] for row in found}
+            missing = [name for name in required if name not in found_names]
+            if missing:
+                raise RuntimeError(
+                    "PRIME AI durable schema is missing: "
+                    + ", ".join(missing)
+                    + ". Apply schemas/prime_ai_persistence.sql to the development database "
+                    "and publish its schema before starting this version."
+                )
+        except BaseException:
+            # Do not publish an unvalidated pool or leak it on startup cancellation.
+            await pool.close()
+            raise
+        _pool = pool
         return True
-    _pool = await asyncpg.create_pool(
-        dsn=os.environ["DATABASE_URL"],
-        min_size=1,
-        max_size=5,
-        command_timeout=15,
-    )
-    required = (
-        "prime_ai_conversation_turns",
-        "prime_ai_durable_memories",
-        "prime_ai_durable_profiles",
-        "prime_ai_durable_memory_revisions",
-    )
-    async with _pool.acquire() as conn:
-        found = await conn.fetch(
-            "SELECT tablename FROM pg_tables "
-            "WHERE schemaname = 'public' AND tablename = ANY($1::text[])",
-            list(required),
-        )
-    found_names = {row["tablename"] for row in found}
-    missing = [name for name in required if name not in found_names]
-    if missing:
-        await _pool.close()
-        _pool = None
-        raise RuntimeError(
-            "PRIME AI durable schema is missing: "
-            + ", ".join(missing)
-            + ". Apply schemas/prime_ai_persistence.sql to the development database "
-            "and publish its schema before starting this version."
-        )
-    return True
 
 
 async def close_durable_store() -> None:
     global _pool
-    pool, _pool = _pool, None
-    if pool is not None:
-        await pool.close()
+    async with _POOL_LOCK:
+        pool, _pool = _pool, None
+        if pool is not None:
+            await pool.close()
 
 
 def durable_store_enabled() -> bool:

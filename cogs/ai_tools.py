@@ -3,11 +3,8 @@ import json
 import math
 import logging
 import asyncio
-import copy
 import re
-import time
-from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import aiohttp
 import discord
@@ -22,12 +19,12 @@ import prime_ai_persistence
 import database
 import management_access
 from interaction_runtime import send_interaction_message
+from prime_ai.cache import RuntimePolicyCache
+from prime_ai.tasks import TaskSupervisor
+from prime_ai.errors import ActionOutcomeTrackingError
+from prime_ai import dialogue
 
 LOGGER = logging.getLogger("AITools")
-
-
-class ActionOutcomeTrackingError(RuntimeError):
-    """The Discord action succeeded, but its durable result could not be saved."""
 
 
 def _split_discord_answer(answer: str, limit: int = 1900) -> list[str]:
@@ -414,51 +411,20 @@ class AITools(commands.Cog):
         self._retention_task: asyncio.Task | None = None
         self._registered_view_keys: set[str] = set()
         self._restore_lock = asyncio.Lock()
-        self._runtime_policy_cache: OrderedDict[
-            int, tuple[float, dict, dict]
-        ] = OrderedDict()
-        self._runtime_policy_locks: dict[int, asyncio.Lock] = {}
+        self._policy_store = RuntimePolicyCache(self._load_runtime_policies)
+        self._runtime_policy_cache = self._policy_store.entries
+        self._runtime_policy_locks = self._policy_store.locks
+        self._background_tasks = TaskSupervisor(LOGGER)
+
+    async def _load_runtime_policies(self, guild_id: int) -> tuple[dict, dict]:
+        # Keep legacy-setting reconciliation ordered with its policy read.
+        settings = await prime_ai_service.get_settings(guild_id)
+        snapshot = await prime_ai_control.get_control_settings(guild_id)
+        return settings, snapshot
 
     async def _runtime_policies(self, guild_id: int) -> tuple[dict, dict]:
         """Share the two per-message policy reads for a short, bounded interval."""
-        key = int(guild_id)
-
-        def cached():
-            entry = self._runtime_policy_cache.get(key)
-            if entry is None or time.monotonic() - entry[0] >= 2.0:
-                return None
-            self._runtime_policy_cache.move_to_end(key)
-            return copy.deepcopy(entry[1]), copy.deepcopy(entry[2])
-
-        result = cached()
-        if result is not None:
-            return result
-
-        lock = self._runtime_policy_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            result = cached()
-            if result is not None:
-                return result
-            settings = await prime_ai_service.get_settings(key)
-            snapshot = await prime_ai_control.get_control_settings(key)
-            self._runtime_policy_cache[key] = (
-                time.monotonic(),
-                settings,
-                snapshot,
-            )
-            self._runtime_policy_cache.move_to_end(key)
-            while len(self._runtime_policy_cache) > 256:
-                self._runtime_policy_cache.popitem(last=False)
-            if len(self._runtime_policy_locks) > 256:
-                for old_key in tuple(self._runtime_policy_locks):
-                    old_lock = self._runtime_policy_locks[old_key]
-                    if (
-                        old_key != key
-                        and old_key not in self._runtime_policy_cache
-                        and not old_lock.locked()
-                    ):
-                        self._runtime_policy_locks.pop(old_key, None)
-            return copy.deepcopy(settings), copy.deepcopy(snapshot)
+        return await self._policy_store.get(guild_id)
 
     def _register_persistent_view(
         self, key: str, view: discord.ui.View, message_id: int | None = None
@@ -488,12 +454,15 @@ class AITools(commands.Cog):
             await self.restore_pending_action_views()
         except Exception:
             LOGGER.exception("[AI] Failed to restore pending confirmations.")
-        self._retention_task = asyncio.create_task(self._retention_loop())
+        if self._retention_task is None or self._retention_task.done():
+            self._retention_task = self._background_tasks.spawn(
+                self._retention_loop(), name="prime-ai-retention",
+            )
 
     async def cog_unload(self):
-        if self._retention_task:
-            self._retention_task.cancel()
-            self._retention_task = None
+        await self._background_tasks.close()
+        self._retention_task = None
+        self._policy_store.clear()
 
     async def restore_pending_action_views(self):
         async with self._restore_lock:
@@ -958,135 +927,14 @@ class AITools(commands.Cog):
         thread_id: int | None = None,
     ) -> str:
         """Generate a response with isolated, expiring durable conversation context."""
-        store = prime_ai_runtime.CONVERSATION_STATE
-        channel_id = getattr(channel, "id", None)
-        key = (
-            (guild.id, channel_id, actor.id)
-            if guild is not None and channel_id is not None
-            else None
+        return await dialogue.generate_user_response(
+            self._current_http_session(), guild, actor, channel, question,
+            store=prime_ai_runtime.CONVERSATION_STATE,
+            config=config, context=context, mode=mode, audit_action=audit_action,
+            turn_key=turn_key, user_message_id=user_message_id,
+            reference_message_id=reference_message_id,
+            mentioned_user_ids=mentioned_user_ids, thread_id=thread_id,
         )
-        try:
-            max_messages = int(config.get("context", {}).get("max_messages", 12))
-        except (TypeError, ValueError):
-            max_messages = 12
-        max_messages = max(0, min(max_messages, 30))
-        effective_history_limit = max_messages - (max_messages % 2)
-        try:
-            retention_days = int(
-                config.get("retention", {}).get("conversation_days", 7)
-            )
-        except (TypeError, ValueError):
-            retention_days = 7
-        retention_days = max(0, min(retention_days, 3650))
-
-        if guild is not None:
-            profile = await prime_ai_intelligence.load_user_profile(
-                int(guild.id), int(actor.id)
-            )
-            context = dict(context or {})
-            context["user_profile"] = profile
-
-        async def generate(conversation: list[dict], request_text: str = question) -> str:
-            return await prime_ai_service.generate_response(
-                self._current_http_session(),
-                guild.id if guild is not None else None,
-                actor.id,
-                channel_id,
-                request_text,
-                audit_action=audit_action,
-                conversation=conversation,
-                context=context,
-                role_ids=[role.id for role in getattr(actor, "roles", ())],
-                mode=mode,
-            )
-
-        if key is None:
-            return await generate([])
-
-        detected_topic = prime_ai_intelligence._extract_topic(question)
-        topic_key = await prime_ai_persistence.resolve_topic_key(
-            int(guild.id),
-            int(channel_id),
-            int(actor.id),
-            detected_topic,
-            reference_message_id,
-            allow_inherit=prime_ai_persistence.is_follow_up(question),
-        )
-        async with store.lock_for(key):
-            context_epoch = store.user_epoch(guild.id, actor.id)
-            conversation = []
-            if effective_history_limit and retention_days > 0:
-                conversation = await prime_ai_persistence.load_turns(
-                    int(guild.id),
-                    int(channel_id),
-                    int(actor.id),
-                    topic_key,
-                    reference_message_id=reference_message_id,
-                    limit=effective_history_limit // 2,
-                )
-            answer = await generate(conversation)
-
-            if prime_ai_intelligence.response_repeats_recent(answer, conversation):
-                rewrite_request = (
-                    f"{question}\n\n"
-                    "[INTERNAL RESPONSE QUALITY RULE: rewrite this answer naturally. "
-                    "Do not repeat the previous answer's wording or explanation. "
-                    "Preserve the same factual meaning and answer the current request directly.]"
-                )
-                try:
-                    rewritten = await generate(conversation, rewrite_request)
-                    if rewritten and not prime_ai_intelligence.response_repeats_recent(
-                        rewritten, conversation
-                    ):
-                        answer = rewritten
-                except Exception:
-                    LOGGER.exception("[AI] Repetition rewrite failed; keeping first answer.")
-
-            store.record_turn(
-                key,
-                question,
-                answer,
-                max_messages=effective_history_limit,
-                expected_epoch=context_epoch,
-            )
-            if (
-                retention_days > 0
-                and effective_history_limit
-                and store.user_epoch(guild.id, actor.id) == context_epoch
-            ):
-                await prime_ai_persistence.record_turn(
-                    turn_key=str(
-                        turn_key
-                        or f"generated:{guild.id}:{channel_id}:{actor.id}:"
-                        f"{int(asyncio.get_running_loop().time() * 1000)}"
-                    ),
-                    guild_id=int(guild.id),
-                    channel_id=int(channel_id),
-                    thread_id=thread_id,
-                    user_id=int(actor.id),
-                    topic_key=topic_key,
-                    user_message_id=user_message_id,
-                    reference_message_id=reference_message_id,
-                    mentioned_user_ids=mentioned_user_ids,
-                    user_content=question,
-                    assistant_content=answer,
-                    retention_days=retention_days,
-                )
-            if store.user_epoch(guild.id, actor.id) == context_epoch:
-                try:
-                    # Keep the durable profile privacy-safe: persist only explicit,
-                    # low-risk preferences and compact metadata, never raw chat text.
-                    await prime_ai_intelligence.update_user_profile(
-                        guild.id,
-                        actor.id,
-                        channel_id=channel_id,
-                        intent=str((context or {}).get("intent") or ""),
-                        topic=prime_ai_intelligence._extract_topic(question),
-                        preferences=prime_ai_intelligence.extract_preference_signals(question),
-                    )
-                except Exception:
-                    LOGGER.exception("[AI] Could not persist PRIME user profile.")
-            return answer
 
     async def _record_message_turn(
         self,
@@ -1103,72 +951,15 @@ class AITools(commands.Cog):
         reference_message_id: int | None = None,
         mentioned_user_ids: list[int] | None = None,
     ):
-        channel_id = getattr(channel, "id", None)
-        if guild is None or channel_id is None:
-            return
-        try:
-            max_messages = int(config.get("context", {}).get("max_messages", 12))
-        except (TypeError, ValueError):
-            max_messages = 12
-        max_messages = max(0, min(max_messages, 30))
-        max_messages -= max_messages % 2
-        key = (guild.id, channel_id, actor.id)
-        prime_ai_runtime.CONVERSATION_STATE.record_turn(
-            key,
-            user_text,
-            assistant_text,
-            max_messages=max_messages,
+        await dialogue.record_message_turn(
+            guild, actor, channel, user_text, assistant_text, config,
+            store=prime_ai_runtime.CONVERSATION_STATE,
+            turn_key=turn_key, user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            reference_message_id=reference_message_id,
+            mentioned_user_ids=mentioned_user_ids,
+            thread_id=getattr(channel, "id", None) if isinstance(channel, discord.Thread) else None,
         )
-        try:
-            retention_days = max(
-                0,
-                min(
-                    int(config.get("retention", {}).get("conversation_days", 7)),
-                    3650,
-                ),
-            )
-        except (TypeError, ValueError):
-            retention_days = 7
-        try:
-            if retention_days > 0 and max_messages >= 2:
-                topic_key = await prime_ai_persistence.resolve_topic_key(
-                    int(guild.id),
-                    int(channel_id),
-                    int(actor.id),
-                    prime_ai_intelligence._extract_topic(user_text),
-                    reference_message_id,
-                    allow_inherit=prime_ai_persistence.is_follow_up(user_text),
-                )
-                key = str(
-                    turn_key
-                    or f"turn:{guild.id}:{channel_id}:{actor.id}:"
-                    f"{int(asyncio.get_running_loop().time() * 1000)}"
-                )
-                await prime_ai_persistence.record_turn(
-                    turn_key=key,
-                    guild_id=int(guild.id),
-                    channel_id=int(channel_id),
-                    user_id=int(actor.id),
-                    topic_key=topic_key,
-                    user_content=user_text,
-                    assistant_content=assistant_text,
-                    retention_days=retention_days,
-                    thread_id=channel_id if isinstance(channel, discord.Thread) else None,
-                    user_message_id=user_message_id,
-                    assistant_message_id=assistant_message_id,
-                    reference_message_id=reference_message_id,
-                    mentioned_user_ids=mentioned_user_ids,
-                )
-            await prime_ai_intelligence.update_user_profile(
-                guild.id,
-                actor.id,
-                channel_id=channel_id,
-                topic=prime_ai_intelligence._extract_topic(user_text),
-                intent="SERVER_ACTION",
-                preferences=prime_ai_intelligence.extract_preference_signals(user_text),
-            )
-        except Exception:
-            LOGGER.exception("[AI] Could not persist PRIME message context.")
 
     async def _is_memory_manager(self, interaction: discord.Interaction) -> bool:
         guild = interaction.guild
@@ -3175,7 +2966,9 @@ class AITools(commands.Cog):
                         sent.append(await message.channel.send(chunk, allowed_mentions=allowed_mentions))
             auto_delete = int(response_config.get("auto_delete_seconds", 0))
             if auto_delete:
-                asyncio.create_task(self._delete_later(sent, auto_delete))
+                self._background_tasks.spawn(
+                    self._delete_later(sent, auto_delete), name="prime-ai-auto-delete",
+                )
             if sent:
                 await prime_ai_persistence.set_assistant_message_id(
                     str(message.id), int(sent[0].id)

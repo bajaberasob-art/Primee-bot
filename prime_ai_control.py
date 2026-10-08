@@ -11,6 +11,7 @@ from typing import Any
 import aiosqlite
 
 import database
+from prime_ai.providers import PROVIDER_NAME, PROVIDER_MODEL
 
 
 def now_utc() -> datetime:
@@ -293,8 +294,8 @@ DEFAULT_CONTROL_SETTINGS: dict[str, Any] = {
     "channel_personas": {},
     "role_overrides": {},
     "provider": {
-        "name": "Google Gemini",
-        "model": "gemini-3.8-flash",
+        "name": PROVIDER_NAME,
+        "model": PROVIDER_MODEL,
         "temperature": 0.7,
         "thinking_level": "medium",
         "max_tokens": 1200,
@@ -798,9 +799,9 @@ def normalize_control_settings(
     if value["provider"]["name"] == "Pollinations":
         # Existing guild rows use Pollinations-specific model IDs. Convert
         # those settings in memory so the provider switch does not break them.
-        value["provider"]["name"] = "Google Gemini"
-        value["provider"]["model"] = "gemini-3.8-flash"
-    if value["provider"]["name"] != "Google Gemini":
+        value["provider"]["name"] = PROVIDER_NAME
+        value["provider"]["model"] = PROVIDER_MODEL
+    if value["provider"]["name"] != PROVIDER_NAME:
         raise ValueError("unsupported_provider")
     if not isinstance(value["provider"]["model"], str) or not _SAFE_MODEL_RE.fullmatch(value["provider"]["model"]):
         raise ValueError("invalid_model")

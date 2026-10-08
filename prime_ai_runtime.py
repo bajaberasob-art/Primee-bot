@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
-import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,6 +13,9 @@ import database
 import prime_ai_control as control
 import prime_ai_service as service
 import subscription_service
+from prime_ai.conversation import ConversationStateStore, CONVERSATION_STATE
+from prime_ai.errors import AccessDenied, InvalidToolPlan
+from prime_ai.linked_commands import execute_linked_command as _execute_linked_command
 from management_access import (
     member_has_management_tier,
     required_tier_for_permission,
@@ -404,14 +405,6 @@ def _action_pattern_matches(tool: str, prompt: str) -> bool:
     return bool(pattern and pattern.search(_normalize_intent_text(prompt)))
 
 
-class AccessDenied(RuntimeError):
-    pass
-
-
-class InvalidToolPlan(ValueError):
-    pass
-
-
 def strip_wake_word(text: Any) -> tuple[bool, str]:
     """Recognize direct PRIME vocatives without matching ordinary name mentions."""
     value = unicodedata.normalize("NFKC", str(text or ""))
@@ -440,116 +433,6 @@ def strip_wake_word(text: Any) -> tuple[bool, str]:
     if trailing:
         return True, value[:trailing.start()].rstrip(" ,،:;.!؟?…—-")
     return False, value.strip()
-
-
-class ConversationStateStore:
-    """Bounded, short-lived per-user conversational context; never persisted."""
-
-    def __init__(
-        self,
-        *,
-        ttl_seconds: int = 21600,
-        max_sessions: int = 2000,
-        max_messages: int = 30,
-    ):
-        self.ttl_seconds = max(60, int(ttl_seconds))
-        self.max_sessions = max(1, int(max_sessions))
-        self.max_messages = max(2, min(int(max_messages), 30))
-        self._entries: dict[tuple[str, str, str], tuple[float, list[dict]]] = {}
-        self._locks: dict[tuple[str, str, str], asyncio.Lock] = {}
-        self._epochs: dict[tuple[str, str], int] = {}
-
-    def _prune(self, now: float) -> None:
-        for key, (touched, _messages) in list(self._entries.items()):
-            if now - touched >= self.ttl_seconds:
-                self._entries.pop(key, None)
-        if len(self._entries) > self.max_sessions:
-            oldest = sorted(
-                self._entries.items(), key=lambda item: item[1][0]
-            )[: len(self._entries) - self.max_sessions]
-            for key, _entry in oldest:
-                self._entries.pop(key, None)
-        for key, lock in list(self._locks.items()):
-            if key not in self._entries and not lock.locked():
-                self._locks.pop(key, None)
-
-    @staticmethod
-    def _clean_key(key: tuple[Any, Any, Any]) -> tuple[str, str, str]:
-        if len(key) != 3 or any(value is None for value in key):
-            raise ValueError("conversation_key_requires_guild_channel_user")
-        return tuple(str(value) for value in key)
-
-    def lock_for(self, key: tuple[Any, Any, Any]) -> asyncio.Lock:
-        clean_key = self._clean_key(key)
-        self._prune(time.monotonic())
-        return self._locks.setdefault(clean_key, asyncio.Lock())
-
-    def get(self, key: tuple[Any, Any, Any]) -> list[dict]:
-        clean_key = self._clean_key(key)
-        now = time.monotonic()
-        self._prune(now)
-        entry = self._entries.get(clean_key)
-        if entry is None:
-            return []
-        _touched, messages = entry
-        self._entries[clean_key] = (now, messages)
-        return [dict(item) for item in messages]
-
-    def record_turn(
-        self,
-        key: tuple[Any, Any, Any],
-        user_text: Any,
-        assistant_text: Any,
-        *,
-        max_messages: int | None = None,
-        expected_epoch: int | None = None,
-    ) -> None:
-        clean_key = self._clean_key(key)
-        if expected_epoch is not None and expected_epoch != self.user_epoch(
-            clean_key[0], clean_key[2]
-        ):
-            return
-        cap = self.max_messages if max_messages is None else max(
-            0, min(int(max_messages), self.max_messages)
-        )
-        if cap < 2:
-            return
-        user = service.sanitize_discord_text(user_text, 1000)
-        assistant = service.sanitize_discord_text(assistant_text, 1500)
-        if not user or not assistant:
-            return
-        now = time.monotonic()
-        self._prune(now)
-        _touched, messages = self._entries.get(clean_key, (now, []))
-        messages = list(messages)
-        messages.extend((
-            {"role": "user", "content": f"[أنت]: {user}"},
-            {"role": "assistant", "content": f"[PRIME AI]: {assistant}"},
-        ))
-        self._entries[clean_key] = (now, messages[-cap:])
-        self._prune(now)
-
-    def user_epoch(self, guild_id: Any, user_id: Any) -> int:
-        return self._epochs.get((str(guild_id), str(user_id)), 0)
-
-    def clear_user(self, guild_id: Any, user_id: Any) -> None:
-        guild_key, user_key = str(guild_id), str(user_id)
-        epoch_key = (guild_key, user_key)
-        self._epochs[epoch_key] = self._epochs.get(epoch_key, 0) + 1
-        for key in list(self._entries):
-            if key[0] == guild_key and key[2] == user_key:
-                self._entries.pop(key, None)
-        for key, lock in list(self._locks.items()):
-            if key[0] == guild_key and key[2] == user_key and not lock.locked():
-                self._locks.pop(key, None)
-
-    def clear(self) -> None:
-        self._entries.clear()
-        self._locks.clear()
-        self._epochs.clear()
-
-
-CONVERSATION_STATE = ConversationStateStore()
 
 
 def classify_intent(text: str) -> str:
@@ -2320,98 +2203,6 @@ async def validate_action_policy(
         if int(getattr(getattr(message, "author", None), "id", 0)) != int(getattr(getattr(bot, "user", None), "id", -1)):
             raise AccessDenied("bot_messages_only")
     return {"step": clean, "targets": targets, "channel": policy_channel}
-
-
-async def _execute_linked_command(
-    bot: Any,
-    guild: Any,
-    actor: Any,
-    channel: Any,
-    step: dict,
-    checked: dict,
-) -> str | None:
-    """Use the same operation methods and command policy as matching Slash commands."""
-    tool = step["tool"]
-    args = step["arguments"]
-    mapping = {
-        "timeout_member": ("timeout", "Moderation"),
-        "kick_member": ("kick", "SanctionsVoiceCog"),
-        "ban_member": ("ban", "SanctionsVoiceCog"),
-        "unban_member": ("unban", "SanctionsVoiceCog"),
-        "set_channel_mode": (
-            "lock" if args.get("mode") == "read_only" else "unlock",
-            "ChatJailCog",
-        ),
-    }
-    linked = mapping.get(tool)
-    if linked is None:
-        return None
-
-    from command_policy_service import (
-        CommandPolicyDenied,
-        ensure_command_policy,
-    )
-
-    command_name, cog_name = linked
-    try:
-        await ensure_command_policy(
-            guild.id,
-            command_name,
-            actor,
-            getattr(channel, "id", None),
-        )
-    except CommandPolicyDenied as error:
-        raise AccessDenied(str(error)) from error
-
-    get_cog = getattr(bot, "get_cog", None)
-    cog = get_cog(cog_name) if callable(get_cog) else None
-    if cog is None:
-        raise AccessDenied("linked_command_handler_unavailable")
-
-    reason = str(args.get("reason") or "PRIME AI action requested")[:512]
-    if tool == "timeout_member":
-        target = checked["targets"]["member"]
-        expires_at = await cog.execute_timeout_command(
-            guild,
-            target,
-            int(args["minutes"]),
-            reason,
-        )
-        return f"timeout_user={target.id}_until={expires_at.isoformat()}"
-    if tool == "kick_member":
-        target = checked["targets"]["member"]
-        await cog.execute_kick_command(guild, actor, target, reason)
-        return f"kicked_user={target.id}"
-    if tool == "ban_member":
-        target = checked["targets"]["member"]
-        await cog.execute_ban_command(
-            guild,
-            actor,
-            target,
-            int(args.get("delete_days", 0)),
-            reason,
-        )
-        return f"banned_user={target.id}"
-    if tool == "unban_member":
-        target = str(int(args["user_id"]))
-        user = await cog._unban_target(guild, target, reason)
-        if user is None:
-            raise ValueError("ban_not_found")
-        try:
-            await guild.fetch_ban(discord_object(int(args["user_id"])))
-        except discord.NotFound:
-            return f"unbanned_user={args['user_id']}"
-        raise RuntimeError("discord_unban_not_confirmed")
-    if tool == "set_channel_mode":
-        target = checked["targets"]["channel"]
-        open_channel = args["mode"] == "open"
-        await cog.execute_channel_mode_command(
-            target,
-            actor,
-            open_channel=open_channel,
-        )
-        return f"set_channel_mode={args['mode']}_channel_id={target.id}"
-    return None
 
 
 async def execute_tool(bot: Any, guild: Any, actor: Any, channel: Any, step: dict) -> str:

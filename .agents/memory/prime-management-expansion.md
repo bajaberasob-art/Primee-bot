@@ -3,7 +3,11 @@ name: PRIME management expansion
 description: Project owner's constraints for expanding PRIME Discord administration.
 ---
 
-Expand existing PRIME subsystems instead of rebuilding them. Preserve all current features and data; never drop or recreate the database. Database changes must be additive and compatible with existing records.
+Internal PRIME AI reorganization is allowed, including moving, merging and splitting modules. Preserve all externally visible features, commands, dashboard, settings, personality and expected behavior. Never drop or recreate the database; database changes must be additive and compatible with existing records.
+
+**Why:** The owner explicitly authorized a substantive internal refactor on 2026-10-08, on the condition that the existing user experience and data remain intact.
+
+**How to apply:** Treat existing integration interfaces and behavioral tests as compatibility boundaries. Fix internal performance/lifecycle defects without redesigning the UI, changing prompts or introducing new product behavior.
 
 The owner chose a per-server PRIME role map for Admin, Moderator, and Staff. Detect the server owner and Discord Administrator from Discord itself. An empty map preserves current behavior; a configured map only adds restrictions and never bypasses Discord permissions, server policy, or actor/target/bot role-hierarchy checks.
 
