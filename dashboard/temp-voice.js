@@ -402,9 +402,18 @@
       style.append(node("label", { class: "tv-field" }, node("span", { text: "ثيم البانل" }), palette));
       var urlField = field("رابط صورة HTTPS اختياري", cfg.banner_url, "url", null, { placeholder: "https://example.com/banner.png",
         oninput: function (event) { cfg.banner_url = event.target.value; cfg.banner_image_id = null; draftBanner = null; dirty = true; updateButtons(); } });
-      // Keep draft ownership explicit; never fetch arbitrary banner URLs server-side.
       var urlControl = urlField.querySelector("input");
-      urlControl.addEventListener("input", function () { cfg.banner_url = urlControl.value; cfg.banner_image_id = null; draftBanner = null; dirty = true; updateButtons(); });
+      urlControl.addEventListener("input", function () {
+        var preview = root.querySelector("[data-preview]");
+        var image = preview && preview.querySelector(".tv-banner-preview");
+        if (/^https:\/\//i.test(urlControl.value)) {
+          if (!image && preview) {
+            image = node("img", { class: "tv-banner-preview", alt: "معاينة بانر الرومات" });
+            preview.append(image);
+          }
+          if (image) image.src = urlControl.value;
+        } else if (image) image.remove();
+      });
       var file = node("input", { type: "file", hidden: true, accept: "image/png,image/jpeg,image/gif",
         onchange: function (event) { var picked = event.target.files && event.target.files[0]; event.target.value = ""; uploadBanner(picked); } });
       style.append(urlField, file, node("div", { class: "tv-actions" },
