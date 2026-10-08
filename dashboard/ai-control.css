@@ -1313,3 +1313,147 @@
     white-space: normal;
   }
 }
+
+.prime-ai-readiness {
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.prime-ai-readiness h3 {
+  margin: 0;
+  font-size: .92rem;
+}
+
+.prime-ai-readiness > p {
+  margin: .3rem 0 .8rem;
+}
+
+.prime-ai-readiness-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .6rem;
+}
+
+.prime-ai-readiness-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  min-width: 0;
+  padding: .75rem;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--r) / 2);
+  background: var(--surface-2);
+}
+
+.prime-ai-readiness-item.is-ready {
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line));
+}
+
+.prime-ai-readiness-copy {
+  display: grid;
+  gap: .22rem;
+  min-width: 0;
+}
+
+.prime-ai-readiness-copy strong {
+  font-size: .8rem;
+}
+
+.prime-ai-readiness-status {
+  color: var(--muted);
+  font-size: .72rem;
+}
+
+.prime-ai-readiness-item.is-ready .prime-ai-readiness-status {
+  color: var(--green);
+}
+
+.prime-ai-readiness-item .prime-ai-button {
+  flex: 0 0 auto;
+  min-height: 2.2rem;
+  padding: .4rem .65rem;
+}
+
+.prime-ai-overview-recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+}
+
+.prime-ai-overview-recent-head .prime-ai-button {
+  min-height: 2.1rem;
+  padding: .35rem .6rem;
+}
+
+.prime-ai-save-dock {
+  position: sticky;
+  bottom: .65rem;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .75rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--line));
+  border-radius: var(--r);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+  backdrop-filter: blur(14px);
+}
+
+.prime-ai-save-dock[hidden],
+.prime-ai-save-dock [hidden] {
+  display: none !important;
+}
+
+.prime-ai-save-status {
+  margin: 0;
+  color: var(--text);
+  font-size: .78rem;
+  font-weight: 700;
+}
+
+.prime-ai-save-dock.has-conflict {
+  border-color: color-mix(in srgb, var(--amber) 50%, var(--line));
+}
+
+.prime-ai-save-actions {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 767px) {
+  .prime-ai-readiness-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .prime-ai-readiness-item {
+    align-items: flex-start;
+  }
+
+  .prime-ai-save-dock {
+    bottom: .25rem;
+    align-items: stretch;
+    flex-direction: column;
+    gap: .55rem;
+    padding: .7rem;
+  }
+
+  .prime-ai-save-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .prime-ai-save-actions [data-action="save-control"] {
+    grid-column: 1 / -1;
+  }
+
+  .prime-ai-save-actions .prime-ai-button {
+    min-width: 0;
+  }
+}

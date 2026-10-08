@@ -73,6 +73,15 @@
       selectedOverrideRole: "",
       activeDestination: config.initialDestination || "overview",
     };
+    const navigationStorageKey = `prime-ai:${String(config.guildId)}:${config.standalone ? "talk" : "control"}:destination`;
+    if (!config.standalone) {
+      try {
+        const savedDestination = sessionStorage.getItem(navigationStorageKey);
+        if (savedDestination) state.activeDestination = savedDestination;
+      } catch (_) {
+        // Navigation still works when browser storage is unavailable.
+      }
+    }
 
     const el = (tag, className, text) => {
       const node = document.createElement(tag);
@@ -136,6 +145,40 @@
     const errorText = () => "تعذر تحميل البيانات. تحقق من الاتصال ثم أعد المحاولة.";
     const clone = (value) => JSON.parse(JSON.stringify(value));
     const controlConfig = () => state.controlDraft || {};
+    const controlHasChanges = () => Boolean(
+      state.controlSnapshot &&
+      state.controlDraft &&
+      JSON.stringify(state.controlDraft) !== JSON.stringify(state.controlSnapshot.config),
+    );
+    const syncSaveDock = () => {
+      const dock = container.querySelector(".prime-ai-save-dock");
+      if (!dock) return;
+      const dirty = controlHasChanges();
+      const saveButton = dock.querySelector('[data-action="save-control"]');
+      const discardButton = dock.querySelector('[data-action="discard-control"]');
+      const conflictButton = dock.querySelector('[data-action="apply-control-conflict"]');
+      const status = dock.querySelector(".prime-ai-save-status");
+      const conflicted = Boolean(state.controlConflict);
+      dock.classList.toggle("has-conflict", conflicted);
+      dock.hidden = !dirty && !conflicted && !state.controlSaving;
+      if (status) {
+        status.textContent = conflicted
+          ? "تغيّرت نسخة الخادم. حمّلها لمراجعة الإعدادات قبل الحفظ."
+          : state.controlSaving
+            ? "جارٍ حفظ التغييرات..."
+            : state.controlSaveError
+              ? "تعذر حفظ التغييرات. راجع التنبيه وحاول مرة أخرى."
+              : "لديك تغييرات غير محفوظة.";
+      }
+      if (saveButton) {
+        saveButton.disabled = !dirty || state.controlSaving || conflicted;
+        saveButton.textContent = state.controlSaving ? "جارٍ الحفظ..." : "حفظ التغييرات";
+      }
+      if (discardButton) {
+        discardButton.hidden = !dirty || conflicted || state.controlSaving;
+      }
+      if (conflictButton) conflictButton.hidden = !conflicted;
+    };
     const configuredMemoryExpirationDays = () => {
       const value = state.controlSnapshot?.config?.memory?.default_expiration_days;
       return Number.isInteger(value) && value >= 0 && value <= 3650 ? value : 90;
@@ -1343,15 +1386,6 @@
           section.details.open = true;
           card.append(section.details);
         });
-
-      const footer = el("div", "prime-ai-actions");
-      footer.append(button(
-        state.controlSaving ? "جارٍ حفظ مركز التحكم..." : "حفظ إعدادات مركز التحكم",
-        "save-control",
-        "prime-ai-button prime-ai-button-primary",
-        state.controlSaving || Boolean(state.controlConflict),
-      ));
-      card.append(footer);
       return card;
     }
 
@@ -1486,14 +1520,14 @@
     function renderOverviewCard() {
       const card = el("section", "prime-ai-card");
       const heading = sectionHeader(
-        "حالة PRIME AI",
-        "ملخص مباشر من إعدادات الخادم وبيانات الاستخدام المسجلة.",
+        "لوحة حالة PRIME AI",
+        "من هنا تبدأ إعداد المساعد وتتابع أهم حالاته من مكان واحد.",
         "prime-ai-overview-title",
       );
       const primaryActions = el("div", "prime-ai-actions prime-ai-overview-actions");
       [
-        ["إعداد PRIME AI", "general"],
-        ["اختبار PRIME AI", "testing"],
+        ["إعداد Talk", "talk"],
+        ["اختبار آمن", "sandbox"],
       ].forEach(([label, destination], index) => {
         const action = button(
           label,
@@ -1508,14 +1542,10 @@
       const cfg = state.controlSnapshot && state.controlSnapshot.config
         ? state.controlSnapshot.config
         : {};
-      const access = cfg.access || {};
-      const provider = cfg.provider || {};
-      const personality = cfg.personality || {};
       const memory = cfg.memory || {};
-      const moderation = cfg.moderation || {};
       const safety = cfg.safety || {};
       const actions = Object.values(cfg.actions || {});
-      const rates = Object.values(cfg.rate_limits || {});
+      const talkChannel = cfg.talk_channel || {};
       const analytics = state.analytics;
       const analyticsText = state.analyticsError
         ? "تعذر تحميل المؤشرات"
@@ -1524,22 +1554,20 @@
           : `${analytics && analytics.totals ? analytics.totals.requests || 0 : 0} طلب خلال 30 يوماً`;
       const values = [
         ["حالة المساعد", state.settingsLoading ? "جارٍ التحميل" : state.settings ? state.enabled ? "مفعّل" : "متوقف" : "غير معروف"],
-        ["تهيئة المزوّد", state.controlLoaded ? state.providerStatus === "configured" ? "مهيّأ" : "غير مهيّأ" : "—"],
-        ["النموذج", state.controlLoaded ? provider.model || "غير محدد" : "—"],
-        ["الشخصية", state.controlLoaded ? personality.preset || "غير محددة" : "—"],
-        ["الذاكرة", state.controlLoaded ? memory.enabled ? "مفعّلة" : "متوقفة" : "—"],
-        ["المهارات المفعّلة", state.controlLoaded ? state.skills.filter((item) => item.available && item.enabled).length : "—"],
-        ["الإجراءات المفعّلة", state.controlLoaded ? actions.filter((item) => item.enabled).length : "—"],
-        ["الإشراف", state.controlLoaded ? moderation.mode || "OFF" : "—"],
-        ["وضع الأمان", state.controlLoaded ? safety.dry_run ? "تجريبي" : "تنفيذ" : "—"],
-        ["سياسات حدود الاستخدام", state.controlLoaded ? `${rates.length} نطاقات` : "—"],
-        ["قائمة القنوات", state.controlLoaded
-          ? access.legacy_allowlist_conflict
-            ? "تعارض — الوصول مقيّد"
-            : Array.isArray(access.allowed_channels) && access.allowed_channels.length
-              ? `${access.allowed_channels.length} قناة محددة`
-              : "كل القنوات"
-          : "—"],
+        ["مزوّد الذكاء", state.controlLoaded ? state.providerStatus === "configured" ? "متصل بالإعداد" : "غير مهيّأ" : "جارٍ التحقق"],
+        ["Talk", state.controlLoaded
+          ? talkChannel.enabled && talkChannel.channel_id ? "مفعّل" : "غير مفعّل"
+          : "جارٍ التحقق"],
+        ["المهارات", state.controlLoaded
+          ? `${state.skills.filter((item) => item.available && item.enabled).length} مفعّلة`
+          : "جارٍ التحميل"],
+        ["إجراءات Discord", state.controlLoaded
+          ? `${actions.filter((item) => item.enabled).length} مسموح بها`
+          : "جارٍ التحميل"],
+        ["حماية التنفيذ", state.controlLoaded
+          ? safety.dry_run ? "معاينة آمنة" : "تنفيذ بعد فحوص السياسة"
+          : "جارٍ التحميل"],
+        ["الذاكرة", state.controlLoaded ? memory.enabled ? "مفعّلة" : "متوقفة" : "جارٍ التحميل"],
         ["نشاط آخر 30 يوماً", analyticsText],
       ];
       const grid = el("div", "prime-ai-stat-grid");
@@ -1550,20 +1578,69 @@
       });
       card.append(grid);
 
+      const readiness = el("section", "prime-ai-readiness");
+      readiness.append(el("h3", "", "الإعداد الأساسي"));
+      readiness.append(el("p", "prime-ai-help", "تحقق من هذه النقاط قبل تفعيل PRIME AI في خادمك."));
+      const readinessItems = [
+        {
+          label: "المساعد",
+          detail: state.settingsLoading ? "جارٍ التحقق" : state.enabled ? "مفعّل" : "متوقف",
+          ready: Boolean(state.settings && state.enabled),
+          destination: "general",
+          action: "مراجعة الإعداد",
+        },
+        {
+          label: "مزود الخدمة",
+          detail: !state.controlLoaded ? "جارٍ التحقق" : state.providerStatus === "configured" ? "مهيّأ" : "يحتاج إعداداً",
+          ready: state.controlLoaded && state.providerStatus === "configured",
+          destination: "providers",
+          action: "عرض المزوّد",
+        },
+        {
+          label: "قناة Talk",
+          detail: !state.controlLoaded
+            ? "جارٍ التحقق"
+            : talkChannel.enabled && talkChannel.channel_id ? "مهيّأة" : "اختيارية — غير مفعّلة",
+          ready: state.controlLoaded && Boolean(talkChannel.enabled && talkChannel.channel_id),
+          destination: "talk",
+          action: "إعداد Talk",
+        },
+        {
+          label: "المهارات",
+          detail: !state.controlLoaded
+            ? "جارٍ التحقق"
+            : state.skills.some((item) => item.available && item.enabled) ? "متاحة" : "لا توجد مهارات مفعّلة",
+          ready: state.controlLoaded && state.skills.some((item) => item.available && item.enabled),
+          destination: "skills",
+          action: "إدارة المهارات",
+        },
+      ];
+      const readinessList = el("div", "prime-ai-readiness-list");
+      readinessItems.forEach((item) => {
+        const row = el("article", `prime-ai-readiness-item${item.ready ? " is-ready" : ""}`);
+        const status = el("span", "prime-ai-readiness-status", item.detail);
+        status.setAttribute("role", "status");
+        const text = el("div", "prime-ai-readiness-copy");
+        text.append(el("strong", "", item.label), status);
+        const link = button(item.action, "navigate-destination", "prime-ai-button prime-ai-button-secondary");
+        link.dataset.destination = item.destination;
+        row.append(text, link);
+        readinessList.append(row);
+      });
+      readiness.append(readinessList);
+      card.append(readiness);
+
       const quick = el("section", "prime-ai-quick-config");
-      quick.append(el("h3", "", "إعداد سريع"));
-      quick.append(el("p", "prime-ai-help", "انتقل مباشرة إلى الإعدادات الأكثر استخداماً."));
+      quick.append(el("h3", "", "إدارة PRIME AI"));
+      quick.append(el("p", "prime-ai-help", "انتقل إلى المحادثة أو القدرات أو سياسات الحماية."));
       const shortcuts = el("div", "prime-ai-quick-links");
       [
-        ["الإعدادات العامة", "general"],
-        ["السياق", "context"],
-        ["الشخصية واللغة", "personality"],
-        ["شخصيات القنوات", "personas"],
-        ["الذاكرة", "memory"],
-        ["الصلاحيات", "permissions"],
+        ["Talk والسياق", "talk"],
+        ["الشخصية والردود", "personality"],
+        ["الوصول والصلاحيات", "permissions"],
         ["المهارات", "skills"],
-        ["الإجراءات", "actions"],
-        ["الردود", "responses"],
+        ["الإشراف", "moderation"],
+        ["سجل الطلبات", "actions"],
       ].forEach(([label, destination]) => {
         const link = button(label, "navigate-destination", "prime-ai-button prime-ai-quick-link");
         link.dataset.destination = destination;
@@ -1573,7 +1650,12 @@
       card.append(quick);
 
       const recent = el("div", "prime-ai-overview-recent");
-      recent.append(el("strong", "", "آخر نشاط مسجل"));
+      const recentHeader = el("div", "prime-ai-overview-recent-head");
+      recentHeader.append(el("strong", "", "آخر نشاط مسجل"));
+      const auditLink = button("سجل التدقيق", "navigate-destination", "prime-ai-button prime-ai-button-secondary");
+      auditLink.dataset.destination = "audit";
+      recentHeader.append(auditLink);
+      recent.append(recentHeader);
       if (state.auditError) {
         recent.append(el("p", "prime-ai-error-text", "تعذر تحميل سجل النشاط."));
       } else if (state.auditLoading) {
@@ -1766,15 +1848,19 @@
           id: "home",
           label: "الرئيسية",
           destinations: [
-            { id: "overview", label: "نظرة عامة", description: "حالة PRIME AI واختصارات الإعداد." },
-            { id: "general", label: "الإعدادات العامة", description: "تفعيل المساعد وتعليمات الخادم." },
+            { id: "overview", label: "لوحة الحالة", description: "حالة النظام، أساسيات الإعداد، وآخر نشاط." },
+            { id: "general", label: "التشغيل الأساسي", description: "تفعيل المساعد وتعليمات الخادم." },
           ],
         },
         {
-          id: "intelligence",
-          label: "الذكاء",
+          id: "conversation",
+          label: "المحادثة",
           destinations: [
-            { id: "memory", label: "الذاكرة", description: "سياسة الذاكرة وملاحظات الخادم." },
+            { id: "talk", label: "Talk", description: "القناة والصلاحيات وسلوك محادثة PRIME." },
+            { id: "context", label: "السياق", description: "السياق المؤقت والرسائل المقتبسة." },
+            { id: "personality", label: "الشخصية", description: "طابع PRIME ولغته وطول ردوده." },
+            { id: "personas", label: "استثناءات القنوات والرتب", description: "شخصيات مخصصة لقناة أو رتبة." },
+            { id: "responses", label: "تنسيق الردود", description: "الذكر والتنسيق والحذف التلقائي." },
           ],
         },
         {
@@ -1782,16 +1868,17 @@
           label: "القدرات",
           destinations: [
             { id: "skills", label: "المهارات", description: "تفعيل المهارات وصلاحياتها." },
-              { id: "actions", label: "طلبات التنفيذ", description: "طلبات PRIME المحفوظة والتأكيدات المعلقة." },
             { id: "modes", label: "الأنماط", description: "أنماط PRIME AI والتفعيل." },
+            { id: "memory", label: "الذاكرة", description: "سياسة الذاكرة وملاحظات الخادم." },
           ],
         },
         {
           id: "safety",
           label: "السلامة",
           destinations: [
+            { id: "permissions", label: "الوصول والصلاحيات", description: "القنوات والرتب المسموح بها." },
             { id: "moderation", label: "الإشراف", description: "تصنيف التنبيهات ومراجعتها." },
-            { id: "sandbox", label: "Sandbox", description: "حالة المعاينة والتنفيذ التجريبي." },
+            { id: "sandbox", label: "Sandbox", description: "معاينة الإجراءات دون تنفيذها." },
           ],
         },
         {
@@ -1799,22 +1886,17 @@
           label: "محرك الذكاء الاصطناعي",
           destinations: [
             { id: "providers", label: "المزوّد", description: "إعدادات مزوّد Gemini الحالية." },
-            { id: "limits", label: "حدود الإجراءات", description: "حدود الإجراءات ومدة الاحتفاظ بالسجلات." },
+            { id: "limits", label: "الحدود والاحتفاظ", description: "حدود الاستخدام ومدد الاحتفاظ." },
           ],
         },
         {
-          id: "observability",
-          label: "المراقبة",
+          id: "activity",
+          label: "النشاط",
           destinations: [
+            { id: "actions", label: "سجل الطلبات", description: "طلبات PRIME ونتائج الإجراءات المسجلة." },
             { id: "audit", label: "سجل التدقيق", description: "الأحداث الإدارية المسجلة." },
             { id: "analytics", label: "التحليلات", description: "ملخص الاستخدام خلال 30 يوماً." },
-          ],
-        },
-        {
-          id: "developer",
-          label: "للمطورين",
-          destinations: [
-            { id: "testing", label: "اختبار PRIME AI", description: "إرسال رسالة اختبار لمرة واحدة." },
+            { id: "testing", label: "اختبار PRIME AI", description: "اختبار الاتصال والرد على رسالة لمرة واحدة." },
           ],
         },
       ];
@@ -1844,7 +1926,17 @@
 
       const notice = el("aside", "prime-ai-notice");
       notice.append(el("strong", "", "مساعد محادثاتي ضمن أنظمة PRIME"));
-      notice.append(el("p", "", "يعمل المساعد بجانب أنظمة الخبرة والسلاسل والاشتراكات دون استبدالها. تُرسل الأسئلة والسياق والذكريات المسموح بها إلى Google Gemini لتوليد الإجابة؛ لا يحفظ PRIME نصوص المحادثات في قاعدة بياناته."));
+      const conversationDays = state.controlSnapshot?.config?.retention?.conversation_days;
+      const retentionCopy = Number.isInteger(conversationDays)
+        ? conversationDays === 0
+          ? "حفظ سياق المحادثات متوقف."
+          : `مدة حفظ سياق المحادثات الموجّهة: ${conversationDays} ${conversationDays === 1 ? "يوم" : "أيام"}.`
+        : "مدة حفظ سياق المحادثات قابلة للضبط من قسم الحدود والاحتفاظ.";
+      notice.append(el(
+        "p",
+        "",
+        `يعمل المساعد بجانب أنظمة PRIME الأخرى. تُرسل الرسائل الموجّهة إلى PRIME والسياق المحدود المسموح به إلى Google Gemini. ${retentionCopy} لا يجمع PRIME سجل القناة بالكامل، والذاكرة المنفصلة تخضع لإعداداتها الخاصة.`,
+      ));
       page.append(notice);
 
       const workspace = el(
@@ -1927,7 +2019,20 @@
       if (!config.standalone) workspace.append(nav);
       workspace.append(content);
       page.append(workspace);
+      const saveDock = el("aside", "prime-ai-save-dock");
+      saveDock.setAttribute("aria-label", "حفظ تغييرات مركز التحكم");
+      const saveStatus = el("p", "prime-ai-save-status");
+      saveStatus.setAttribute("aria-live", "polite");
+      const saveActions = el("div", "prime-ai-save-actions");
+      saveActions.append(
+        button("تحميل النسخة الأحدث", "apply-control-conflict", "prime-ai-button prime-ai-button-secondary"),
+        button("تجاهل التغييرات", "discard-control", "prime-ai-button prime-ai-button-secondary"),
+        button("حفظ التغييرات", "save-control", "prime-ai-button prime-ai-button-primary"),
+      );
+      saveDock.append(saveStatus, saveActions);
+      page.append(saveDock);
       container.replaceChildren(page);
+      syncSaveDock();
     }
 
     async function loadSettings(preserveDraft) {
@@ -2019,11 +2124,27 @@
         state.isBotOwner = Boolean(data.is_bot_owner);
         state.providerStatus = String(data.provider_status || "unknown");
         state.controlLoaded = true;
-        if (Array.isArray(data.operations)) state.operations = data.operations;
-        if (data.analytics && typeof data.analytics === "object") state.analytics = data.analytics;
+        if (Array.isArray(data.operations)) {
+          state.operations = data.operations;
+          state.operationsError = "";
+        } else {
+          state.operationsError = "تعذر تحميل سجل الطلبات.";
+        }
+        state.operationsLoading = false;
+        if (data.analytics && typeof data.analytics === "object" && data.analytics.totals) {
+          state.analytics = data.analytics;
+          state.analyticsError = "";
+        } else {
+          state.analyticsError = "تعذر تحميل المؤشرات.";
+        }
+        state.analyticsLoading = false;
       } catch (_) {
         if (state.disposed) return;
         state.controlError = errorText();
+        state.operationsError = state.controlError;
+        state.operationsLoading = false;
+        state.analyticsError = state.controlError;
+        state.analyticsLoading = false;
       } finally {
         if (!state.disposed) {
           state.controlLoading = false;
@@ -2405,12 +2526,14 @@
       else if (dataset.field === "system-prompt") state.systemPrompt = target.value;
       else if (dataset.field === "memory-content") state.memoryContent = target.value;
       else if (dataset.field === "test-prompt") state.testPrompt = target.value;
+      syncSaveDock();
     };
     const onChange = (event) => {
       const target = event.target;
       const dataset = target && target.dataset ? target.dataset : {};
       if (dataset.controlPath) {
         updateDraft(dataset.controlPath, fieldValue(target));
+        syncSaveDock();
         if (
           dataset.controlPath === "memory.default_expiration_days" &&
           !state.editingMemory &&
@@ -2468,6 +2591,13 @@
         const destination = target.dataset.destination;
         if (!destination) return;
         state.activeDestination = destination;
+        if (!config.standalone) {
+          try {
+            sessionStorage.setItem(navigationStorageKey, destination);
+          } catch (_) {
+            // The selected section still changes for this page session.
+          }
+        }
         render();
         const heading = container.querySelector(".prime-ai-page-title h2");
         if (heading) {
@@ -2505,6 +2635,12 @@
       else if (action === "submit-test") runTest();
       else if (action === "run-sandbox") runSandbox();
       else if (action === "save-control") saveControl();
+      else if (action === "discard-control" && state.controlSnapshot) {
+        applyControlSnapshot(state.controlSnapshot, false);
+        state.controlConflict = null;
+        state.controlSaveError = "";
+        render();
+      }
       else if (action === "reload-control") loadControl();
       else if (action === "apply-control-conflict" && state.controlConflict) {
         try {
@@ -2558,8 +2694,6 @@
     loadSettings();
     loadControl();
     loadAudit();
-    loadOperations();
-    loadAnalytics();
 
     return function cleanup() {
       state.disposed = true;
