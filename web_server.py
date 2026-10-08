@@ -1586,8 +1586,10 @@ async def api_guild_stats(req):
 
 
 from announcement_dashboard import register_routes as register_announcement_routes
+from temp_voice_dashboard import register_routes as register_temp_voice_routes
 
 register_announcement_routes(routes)
+register_temp_voice_routes(routes)
 
 
 def _subscription_actor_id(session: dict) -> int:
