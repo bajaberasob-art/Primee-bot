@@ -6636,6 +6636,56 @@
       card("سجل الإعلانات السابقة والمسودات", history),
     );
   }
+  let subscriptionMagicHost = null;
+  let subscriptionMagicLoad = null;
+
+  function disposeSubscriptionMagic() {
+    if (subscriptionMagicHost && window.PrimeAIMagic) {
+      window.PrimeAIMagic.dispose(subscriptionMagicHost);
+    }
+    subscriptionMagicHost = null;
+  }
+
+  function enhanceSubscriptionStats(host, stats) {
+    subscriptionMagicHost = host;
+    requestAnimationFrame(() => {
+      if (!host.isConnected || subscriptionMagicHost !== host) return;
+      if (!subscriptionMagicLoad || window.PrimeAIMagic) {
+        subscriptionMagicLoad = window.PrimeAIMagic
+          ? Promise.resolve(window.PrimeAIMagic)
+          : new Promise((resolve, reject) => {
+            let script = document.querySelector('script[src*="ai-magic-island.js"]');
+            const created = !script;
+            if (!script) {
+              script = document.createElement("script");
+              const source = document.querySelector('script[src*="ai-control.js"]');
+              script.src = (source?.src || new URL("static/ai-control.js", document.baseURI).href)
+                .replace("ai-control.js", "ai-magic-island.js");
+              script.async = true;
+              script.dataset.primeAiIsland = "1";
+            }
+            script.addEventListener("load", () => {
+              if (window.PrimeAIMagic) resolve(window.PrimeAIMagic);
+              else reject(new Error("magic_ui_unavailable"));
+            }, { once: true });
+            script.addEventListener("error", () => {
+              if (created) script.remove();
+              reject(new Error("magic_ui_load_failed"));
+            }, { once: true });
+            if (created) document.head.append(script);
+          });
+      }
+      subscriptionMagicLoad.then((bridge) => {
+        if (host.isConnected && subscriptionMagicHost === host) {
+          bridge.mount(host, { stats, active: true });
+        }
+      }).catch(() => {
+        // The real, readable static counters remain if the optional island fails.
+        subscriptionMagicLoad = null;
+      });
+    });
+  }
+
   const subscriptionEvents = [
     ["created", "تفعيل الاشتراك"],
     ["renewal", "تجديد الاشتراك"],
@@ -7581,6 +7631,7 @@
         type: "button",
         class: tab === key ? "is-active" : "",
         "aria-pressed": String(tab === key),
+        "aria-current": tab === key ? "true" : false,
         text: label,
         onClick: () => {
           viewState.tab = key;
@@ -7611,17 +7662,21 @@
     } else if (tab === "logs") {
       panel = subscriptionLogsView(data);
     } else {
+      const metricKeys = ["active_subscriptions", "expired_subscriptions", "expiring_soon", "new_subscriptions_today", "renewals_this_month", "total_subscription_xp"];
+      const metricLabels = ["اشتراكات نشطة", "اشتراكات منتهية", "تنتهي خلال 7 أيام", "جديدة اليوم", "تجديدات هذا الشهر", "XP الاشتراكات"];
+      const metricHost = el("div", { class: "subscription-stat-grid", "data-subscription-stats": "true" },
+        ...metricKeys.map((key, index) => el("article", { class: "subscription-stat-card" },
+          el("small", { text: metricLabels[index] }),
+          el("strong", { text: subNumber(stats[key]) }),
+        )),
+      );
+      enhanceSubscriptionStats(metricHost, metricKeys.map((key, index) => ({
+        id: `subscription-${state.guild.id}-${key}`,
+        label: metricLabels[index],
+        value: Math.max(0, Number(stats[key]) || 0),
+      })));
       panel = el("div", { class: "subscription-stack" },
-        el("div", { class: "subscription-stat-grid" },
-          ["active_subscriptions", "expired_subscriptions", "expiring_soon", "new_subscriptions_today", "renewals_this_month", "total_subscription_xp"]
-            .map((key, index) => {
-              const labels = ["اشتراكات نشطة", "اشتراكات منتهية", "تنتهي خلال 7 أيام", "جديدة اليوم", "تجديدات هذا الشهر", "XP الاشتراكات"];
-              return el("article", { class: "subscription-stat-card" },
-                el("small", { text: labels[index] }),
-                el("strong", { text: subNumber(stats[key]) }),
-              );
-            }),
-        ),
+        metricHost,
         el("section", { class: "subscription-panel" },
           el("div", { class: "subscription-entity-head" },
             el("div", {}, el("h3", { text: "أحدث الاشتراكات" }), el("small", { text: "تُحدّث الأرقام بعد كل قراءة للبيانات المحفوظة." })),
@@ -9679,6 +9734,7 @@
   }
   function renderPage() {
     const main = $("#main");
+    disposeSubscriptionMagic();
     if (typeof state.aiControlCleanup === "function") {
       state.aiControlCleanup();
       state.aiControlCleanup = null;

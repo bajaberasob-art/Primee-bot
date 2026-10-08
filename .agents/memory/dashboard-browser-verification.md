@@ -17,3 +17,14 @@ using the loaded script URL and rendered properties. In isolated verification,
 clear service workers/cache storage or use a fresh browser context before the
 targeted correction check. Keep normal caching enabled for the real dashboard,
 and release frontend changes with consistent new asset and worker versions.
+
+After removing an isolated verification workflow, confirm that its test-server
+process actually stopped; workflow removal alone is not sufficient evidence.
+
+**Why:** A subsequent verification server encountered a port collision because
+an older dashboard harness remained alive after its workflow was removed.
+
+**How to apply:** Identify the exact test-server process and confirm its command
+before stopping any leftover process. Never stop the production bot to clear a
+test port, and never leave a harness with a test-login endpoint running after
+verification is complete.

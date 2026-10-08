@@ -1,0 +1,227 @@
+/* PRIME subscriptions: scoped to .subscription-view and .subscription-modal.
+   Uses dashboard theme variables only (--surface, --line, --text, --muted, --blue ...). */
+.subscription-view {
+  --sub-surface: var(--surface, #0a0e17);
+  --sub-raised: var(--surface-2, #111827);
+  --sub-line: color-mix(in srgb, var(--line, #1e293b) 80%, transparent);
+  --sub-text: var(--text, #f1f5f9);
+  --sub-muted: color-mix(in srgb, var(--muted, #94a3b8) 92%, var(--text, #f1f5f9));
+  --sub-accent: var(--blue, #3b82f6);
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  gap: 16px;
+  padding-bottom: calc(110px + env(safe-area-inset-bottom));
+}
+.subscription-view > *,
+.subscription-view .subscription-stack > * { min-width: 0; max-width: 100%; }
+.subscription-view .section-intro p { color: var(--sub-muted); line-height: 1.8; max-width: 70ch; }
+
+/* Tabs: one quiet segmented rail, clear active state, scrolls inside itself */
+.subscription-view .subscription-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.subscription-view .subscription-tabs {
+  gap: 2px;
+  padding: 3px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--sub-raised);
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+.subscription-view .subscription-tabs::-webkit-scrollbar { display: none; }
+.subscription-view .subscription-tabs button {
+  scroll-snap-align: center;
+  min-height: 40px;
+  padding-inline: 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--sub-muted);
+  box-shadow: none;
+  white-space: nowrap;
+  transition: color .15s ease, background-color .15s ease;
+}
+.subscription-view .subscription-tabs button:hover { color: var(--sub-text); background: color-mix(in srgb, var(--sub-text) 7%, transparent); }
+.subscription-view .subscription-tabs button.is-active,
+.subscription-view .subscription-tabs button[aria-current="true"] {
+  color: var(--sub-text);
+  background: color-mix(in srgb, var(--sub-accent) 22%, var(--sub-surface));
+  border-bottom-color: var(--sub-accent);
+  box-shadow: none;
+}
+.subscription-view .subscription-tabs button:focus-visible,
+.subscription-view .subscription-toolbar > .btn:focus-visible { outline: 2px solid var(--sub-accent); outline-offset: 2px; }
+.subscription-view .subscription-toolbar > .btn { min-height: 40px; white-space: nowrap; }
+
+/* Panels: flat surfaces separated by a hairline instead of heavy outlines */
+.subscription-view .subscription-panel {
+  padding: 18px;
+  border: 1px solid var(--sub-line);
+  border-radius: 14px;
+  background: var(--sub-surface);
+  box-shadow: none;
+}
+.subscription-view .subscription-entity-head { flex-wrap: wrap; align-items: flex-start; }
+.subscription-view .subscription-entity-head > div { min-width: 0; flex: 1 1 200px; }
+.subscription-view .subscription-entity-head small,
+.subscription-view .subscription-muted,
+.subscription-view .subscription-field small { color: var(--sub-muted); }
+
+/* Stats: borderless tiles, hierarchy via number size */
+.subscription-view .subscription-stat-grid { gap: 10px; }
+.subscription-view .subscription-stat-card {
+  gap: 10px;
+  padding: 16px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--sub-raised);
+  position: relative;
+  overflow: hidden;
+}
+.subscription-view .subscription-stat-card::before {
+  content: "";
+  position: absolute;
+  inset-block: 14px;
+  inset-inline-start: 0;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--sub-accent);
+}
+.subscription-view .subscription-stat-card small { color: var(--sub-muted); font-size: 12px; font-weight: 600; }
+.subscription-view .subscription-stat-card strong { color: var(--sub-text); font-size: clamp(24px, 6vw, 32px); }
+.subscription-view .subscription-stat-grid:has(> .prime-ai-island-strip) { display: block; }
+.subscription-view .prime-ai-island-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+}
+.subscription-view .prime-ai-island-tile {
+  min-width: 0;
+  padding: 16px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--sub-raised);
+}
+.subscription-view .prime-ai-island-label { display: block; color: var(--sub-muted); font-size: 12px; }
+.subscription-view .prime-ai-island-value { display: block; margin-top: 10px; color: var(--sub-text); font-size: clamp(24px, 6vw, 32px); }
+@media (prefers-reduced-motion: no-preference) {
+  .subscription-view .subscription-stat-card,
+  .subscription-view .subscription-panel { animation: sub-rise .28s ease both; }
+  @keyframes sub-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+}
+
+/* Fields */
+.subscription-view .subscription-field,
+.subscription-modal .subscription-field { color: var(--text, #f1f5f9); }
+.subscription-view .subscription-field :is(input, select, textarea),
+.subscription-view .subscription-filter-form :is(input, select),
+.subscription-modal .subscription-field :is(input, select, textarea) {
+  border: 1px solid var(--sub-line, var(--line));
+  border-radius: 10px;
+  background: var(--bg, #05070b);
+  color: var(--text, #f1f5f9);
+}
+.subscription-view .subscription-field :is(input, select, textarea):focus,
+.subscription-view .subscription-filter-form :is(input, select):focus,
+.subscription-modal .subscription-field :is(input, select, textarea):focus {
+  border-color: var(--blue, #3b82f6);
+  outline: 2px solid color-mix(in srgb, var(--blue, #3b82f6) 35%, transparent);
+}
+.subscription-view .subscription-check {
+  border: 0;
+  background: var(--sub-raised);
+  color: var(--sub-text);
+}
+.subscription-view .subscription-check:has(input:checked) { background: color-mix(in srgb, var(--sub-accent) 20%, var(--sub-raised)); }
+
+/* Entities, rows, tables */
+.subscription-view :is(.subscription-entity, .subscription-routing-card, .subscription-template-card, .subscription-audit-row) {
+  border: 0;
+  border-radius: 12px;
+  background: var(--sub-raised);
+  min-width: 0;
+}
+.subscription-view .subscription-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 0;
+  border-radius: 12px;
+  background: var(--sub-raised);
+  -webkit-overflow-scrolling: touch;
+}
+.subscription-view .subscription-table-wrap table { border-collapse: collapse; width: 100%; }
+.subscription-view .subscription-table-wrap :is(th, td) { border-color: var(--sub-line); }
+.subscription-view .subscription-table-wrap th { color: var(--sub-muted); font-weight: 700; }
+.subscription-view .subscription-row-actions { flex-wrap: wrap; }
+.subscription-view .subscription-audit-row,
+.subscription-view .subscription-audit-row > * { overflow-wrap: anywhere; }
+.subscription-view .subscription-error {
+  border: 0;
+  border-inline-start: 3px solid var(--red, #ef4444);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--red, #ef4444) 12%, var(--sub-surface));
+  color: var(--sub-text);
+}
+.subscription-view .subscription-form-actions {
+  position: sticky;
+  bottom: 16px;
+  z-index: 2;
+  flex-wrap: wrap;
+  padding: 12px;
+  border: 1px solid var(--sub-line);
+  border-radius: 12px;
+  background: var(--sub-surface);
+}
+.subscription-view .sub-status { border: 0; font-weight: 700; }
+
+/* Dialog: capped height, scrolling body, actions always reachable */
+.subscription-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line, #1e293b);
+  background: var(--surface, #0a0e17);
+  color: var(--text, #f1f5f9);
+  padding: 20px;
+}
+.subscription-modal .subscription-form-actions {
+  position: sticky;
+  bottom: -20px;
+  margin-inline: -20px;
+  padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+  background: var(--surface, #0a0e17);
+  border-top: 1px solid var(--line, #1e293b);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.subscription-modal .subscription-form-grid { min-width: 0; }
+
+@media (max-width: 620px) {
+  .subscription-view .subscription-toolbar { grid-template-columns: 1fr; }
+  .subscription-view .subscription-toolbar > .btn { width: 100%; }
+  .subscription-view .subscription-panel { padding: 14px; }
+  .subscription-view .subscription-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .subscription-view .prime-ai-island-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .subscription-view .subscription-form-actions { bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .subscription-view .subscription-entity-head > .btn { width: 100%; }
+  .subscription-modal { padding: 16px; }
+  .subscription-modal .subscription-form-actions { bottom: -16px; margin-inline: -16px; padding-inline: 16px; }
+  .subscription-modal .subscription-form-actions .btn { flex: 1 1 auto; }
+}
