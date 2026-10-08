@@ -1300,7 +1300,8 @@ def _model_visible_context(context: dict | None, mode: str) -> dict:
                 for key, value in (user_value.get("permissions") or {}).items()
                 if str(key) in {
                     "administrator", "manage_guild", "manage_messages",
-                    "manage_roles", "manage_channels", "moderate_members",
+                    "manage_roles", "manage_channels", "manage_nicknames",
+                    "moderate_members",
                     "kick_members", "ban_members",
                 }
             },

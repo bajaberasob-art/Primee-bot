@@ -116,6 +116,14 @@ ACTION_REGISTRY: dict[str, dict[str, Any]] = {
         "prime_permission": "access.minimum_permission", "confirmation_required": False,
         "handler": "rename_channel",
     },
+    "set_member_nickname": {
+        "action_id": "SET_MEMBER_NICKNAME",
+        "name": "تغيير لقب عضو",
+        "description": "تغيير اسم عرض عضو داخل هذا الخادم فقط، دون تغيير اسم مستخدم Discord العام.",
+        "category": "MEMBER", "risk": "MEDIUM", "discord_permission": "manage_nicknames",
+        "prime_permission": "access.minimum_permission", "confirmation_required": False,
+        "handler": "set_member_nickname",
+    },
     "delete_channel": {
         "action_id": "DELETE_CHANNEL", "name": "حذف قناة", "description": "حذف قناة نهائياً.",
         "category": "CHANNEL", "risk": "CRITICAL", "discord_permission": "manage_channels",
@@ -440,9 +448,12 @@ SKILL_CATALOG: tuple[dict[str, Any], ...] = (
     },
     {
         "key": "members", "skill_id": "MEMBER_INFO", "name": "Members",
-        "description": "Read basic information about a uniquely resolved server member.",
-        "category": "Server", "permission": "manage_guild", "actions": ["fetch_member"],
-        "action_permissions": {"fetch_member": "view_channel"},
+        "description": "Read basic information about a uniquely resolved server member or a bounded member list.",
+        "category": "Server", "permission": "manage_guild",
+        "actions": ["fetch_member", "fetch_members"],
+        "action_permissions": {
+            "fetch_member": "view_channel", "fetch_members": "view_channel",
+        },
         "required_context": ["guild", "member"], "supported_intents": ["MEMBER_INFO"],
         "handler": "discord.Guild.get_member/discord.Guild.fetch_member",
         "dashboard_config": "skills.members", "safety_level": "read_only",

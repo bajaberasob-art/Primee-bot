@@ -992,6 +992,23 @@ class PrimeAIUnderstandingTests(unittest.IsolatedAsyncioTestCase):
             "SERVER_ACTION",
         )
 
+    def test_nickname_change_is_registered_as_a_server_action(self):
+        for prompt in (
+            "change Khalid's nickname to Captain",
+            "rename the member",
+            "غير اسم خالد إلى القائد",
+            "غير لقب العضو خالد",
+        ):
+            with self.subTest(prompt=prompt):
+                request = prime_ai_runtime.detect_skill_request(prompt)
+                self.assertEqual(request["intent"], "SERVER_ACTION")
+                self.assertTrue(
+                    prime_ai_runtime._action_pattern_matches(
+                        "set_member_nickname", prompt
+                    )
+                )
+        self.assertIn("set_member_nickname", prime_ai_runtime.ACTION_TOOL_SCHEMAS)
+
     def test_natural_skill_routing_extracts_arabic_and_english_parameters(self):
         cases = [
             ("كم لفل خالد؟", "leveling", "query_leveling", "خالد"),
@@ -1031,6 +1048,168 @@ class PrimeAIUnderstandingTests(unittest.IsolatedAsyncioTestCase):
             prime_ai_runtime.detect_skill_request("delete that role")["intent"],
             "SERVER_ACTION",
         )
+        for prompt, tool in (
+            ("Show channels", "fetch_channels"),
+            ("What channels are there?", "fetch_channels"),
+            ("اعرض القنوات", "fetch_channels"),
+            ("list roles", "fetch_roles"),
+            ("قائمة الرتب", "fetch_roles"),
+            ("show members", "fetch_members"),
+            ("اعرض الاعضاء", "fetch_members"),
+        ):
+            with self.subTest(prompt=prompt):
+                request = prime_ai_runtime.detect_skill_request(prompt)
+                self.assertEqual(request["tool"], tool)
+
+    async def test_server_channel_role_and_member_reads_include_safe_names(self):
+        role = SimpleNamespace(id=51, name="Moderator", position=3, managed=False)
+        visible_channel = SimpleNamespace(
+            id=61,
+            name="general",
+            type="text",
+            category=None,
+            permissions_for=lambda _member: SimpleNamespace(view_channel=True),
+        )
+        hidden_channel = SimpleNamespace(
+            id=62,
+            name="staff-room",
+            type="text",
+            category=None,
+            permissions_for=lambda _member: SimpleNamespace(view_channel=False),
+        )
+        target = SimpleNamespace(
+            id=71,
+            name="khalid",
+            display_name="Khalid",
+            global_name="Khalid Global",
+            bot=False,
+            roles=[role],
+            joined_at=None,
+        )
+        actor = SimpleNamespace(id=72)
+        guild = SimpleNamespace(
+            id=10,
+            name="PRIME",
+            member_count=12,
+            channels=[visible_channel, hidden_channel],
+            roles=[role],
+            members=[target, actor],
+            get_member=lambda member_id: target if int(member_id) == target.id else None,
+        )
+
+        server = await prime_ai_runtime.get_skill_data(
+            "fetch_server_data", guild, actor, {}
+        )
+        channels = await prime_ai_runtime.get_skill_data(
+            "fetch_channels", guild, actor, {}
+        )
+        roles = await prime_ai_runtime.get_skill_data(
+            "fetch_roles", guild, actor, {}
+        )
+        member = await prime_ai_runtime.get_skill_data(
+            "fetch_member", guild, actor, {"user_id": str(target.id)}
+        )
+        members = await prime_ai_runtime.get_skill_data(
+            "fetch_members", guild, actor, {"limit": 1}
+        )
+
+        self.assertEqual(server["name"], "PRIME")
+        self.assertEqual(server["visible_channel_names"], ["general"])
+        self.assertEqual(server["role_names"], ["Moderator"])
+        self.assertEqual([item["name"] for item in channels], ["general"])
+        self.assertEqual(roles[0]["name"], "Moderator")
+        self.assertEqual(member["display_name"], "Khalid")
+        self.assertEqual(member["username"], "khalid")
+        self.assertEqual(member["roles"][0]["name"], "Moderator")
+        self.assertEqual(members["listed_count"], 1)
+        self.assertTrue(members["truncated"])
+        self.assertEqual(members["members"][0]["display_name"], "Khalid")
+
+    async def test_member_list_skill_requires_manager_permission_and_routes_data(self):
+        target = SimpleNamespace(
+            id=21,
+            name="khalid",
+            display_name="Khalid",
+            bot=False,
+            roles=[],
+        )
+        guild = SimpleNamespace(
+            id=10, owner_id=999, member_count=1, members=[target]
+        )
+        channel = SimpleNamespace(
+            id=30,
+            guild=guild,
+            permissions_for=lambda _member: SimpleNamespace(view_channel=True),
+        )
+        skill = {
+            "key": "members",
+            "skill_id": "MEMBER_INFO",
+            "enabled": True,
+            "allowed_actions": ["fetch_members"],
+            "dangerous_actions": [],
+            "required_permission": "manage_guild",
+            "action_permissions": {"fetch_members": "view_channel"},
+            "allowed_roles": [],
+            "allowed_channels": [],
+            "rate_limit": {"limit": 5, "window_seconds": 60},
+        }
+        request = prime_ai_runtime.detect_skill_request("show members")
+        ordinary_actor = SimpleNamespace(
+            id=22,
+            roles=[],
+            guild_permissions=SimpleNamespace(
+                administrator=False, manage_guild=False, view_channel=True
+            ),
+        )
+        manager = SimpleNamespace(
+            id=23,
+            roles=[],
+            guild_permissions=SimpleNamespace(
+                administrator=False, manage_guild=True, view_channel=True
+            ),
+        )
+
+        with (
+            patch.object(
+                prime_ai_control, "get_skills",
+                new=AsyncMock(return_value=[skill]),
+            ),
+            patch.object(prime_ai_runtime.service, "allow_request", return_value=0),
+        ):
+            denied = await prime_ai_runtime.route_skill_request(
+                guild, ordinary_actor, channel, request
+            )
+            allowed = await prime_ai_runtime.route_skill_request(
+                guild, manager, channel, request
+            )
+
+        self.assertEqual(denied["error"], "required_permission_missing")
+        self.assertFalse(denied["success"])
+        self.assertTrue(allowed["success"])
+        self.assertEqual(allowed["data"]["members"][0]["display_name"], "Khalid")
+
+    def test_rename_targets_ignore_the_requested_new_name(self):
+        current = SimpleNamespace(id=123456789012345678, name="general")
+        destination = SimpleNamespace(id=123456789012345679, name="support")
+        guild = SimpleNamespace(
+            id=1, members=[], roles=[], channels=[current, destination]
+        )
+
+        cases = (
+            ("rename channel general to support", [str(current.id)]),
+            ("غيّر اسم هذه القناة إلى support", [str(current.id)]),
+            ("rename the channel to support", [str(current.id)]),
+            ("خل الروم باسم الدعم", [str(current.id)]),
+        )
+        for prompt, expected in cases:
+            with self.subTest(prompt=prompt):
+                candidates = prime_ai_runtime._action_candidates(
+                    guild, prompt, current
+                )
+                self.assertEqual(
+                    [item["id"] for item in candidates if item["kind"] == "channel"],
+                    expected,
+                )
 
     async def test_entity_resolution_requires_exact_existing_guild_entities(self):
         first = SimpleNamespace(id=20, display_name="Khalid", name="Khalid")
@@ -3271,6 +3450,7 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
             manage_channels=True,
             manage_roles=True,
             moderate_members=True,
+            manage_nicknames=True,
         )
         bot_member = SimpleNamespace(id=100000000000000902, top_role=ROLES[3])
         guild.me = bot_member
@@ -4032,6 +4212,55 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
             await prime_ai_runtime.validate_action_policy(
                 bot, guild, actor, channel, step, config
             )
+
+    async def test_member_nickname_requires_manage_permission_and_is_verified(self):
+        guild, actor, channel, bot, _channels, members = self._runtime_context()
+        target = SimpleNamespace(
+            id=100000000000000905,
+            guild=guild,
+            top_role=ROLES[2],
+            nick=None,
+        )
+        members[target.id] = target
+        config = self._action_config("set_member_nickname")
+        step = {
+            "tool": "set_member_nickname",
+            "arguments": {
+                "user_id": str(target.id),
+                "nickname": "Captain Khalid",
+            },
+        }
+
+        validated = await prime_ai_runtime.validate_action_policy(
+            bot, guild, actor, channel, step, config
+        )
+        self.assertIs(validated["targets"]["member"], target)
+
+        actor.top_role = ROLES[2]
+        with self.assertRaisesRegex(
+            prime_ai_runtime.AccessDenied, "member_hierarchy_denied"
+        ):
+            await prime_ai_runtime.validate_action_policy(
+                bot, guild, actor, channel, step, config
+            )
+        actor.top_role = ROLES[3]
+
+        async def set_nickname(*, nick, reason):
+            target.nick = nick
+
+        target.edit = AsyncMock(side_effect=set_nickname)
+        with patch.object(
+            prime_ai_runtime.control,
+            "get_control_settings",
+            new=AsyncMock(return_value={"config": config}),
+        ):
+            result = await prime_ai_runtime.execute_tool(
+                bot, guild, actor, channel, step
+            )
+
+        self.assertIn("changed_member_nickname", result)
+        self.assertEqual(target.nick, "Captain Khalid")
+        target.edit.assert_awaited_once()
 
     async def test_channel_mode_edit_preserves_existing_everyone_overwrites_and_verifies(self):
         guild, actor, channel, bot, _channels, _members = self._runtime_context()

@@ -822,6 +822,7 @@
           MESSAGE: "رسائل",
           CHANNEL: "قنوات",
           ROLE: "رتب",
+          MEMBER: "أعضاء",
           MODERATION: "إشراف",
         }[entry.category] || entry.category;
         const discordPermissions = [
