@@ -55,3 +55,9 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "DASHBOARD_LOCAL_LOGIN=0 DASHBOARD_BASE_PATH=/api/dashboard/ PORT=8008 DASHBOARD_PORT=8008 python main.py"
+
+[userenv]
+
+[userenv.development]
+CLIENT_ID = "1550042204091715634"
+REDIRECT_URI = "https://606ace4b-80f4-436d-a16c-4b91959eec01-00-1btltnca2drwt.pike.replit.dev/api/dashboard/api/auth/callback"
