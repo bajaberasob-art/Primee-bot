@@ -71,7 +71,7 @@
       editingMemory: null,
       selectedPersonaChannel: "",
       selectedOverrideRole: "",
-      activeDestination: "overview",
+      activeDestination: config.initialDestination || "overview",
     };
 
     const el = (tag, className, text) => {
@@ -760,11 +760,6 @@
         "السماح بأوامر Slash",
         cfg.activation && cfg.activation.command,
       ));
-      modesSection.content.append(controlToggle(
-        "activation.wake_word",
-        "الاستجابة عند النداء «يا برايم» أو Hey Prime",
-        !cfg.activation || cfg.activation.wake_word !== false,
-      ));
       addControlSection("modes", modesSection);
 
       const channels = availableChannels()
@@ -778,8 +773,8 @@
         ["administrator", "مسؤول"], ["owner", "مالك البوت"],
       ].map(([value, label]) => ({ value, label }));
       const actionSection = controlDisclosure(
-        "الإجراءات والأمان",
-        "PRIME يفهم الطلبات الطبيعية وينفذ الإجراء مباشرة بعد فحص الصلاحيات الحية والحد الأدنى للرتبة. التأكيد محصور في الإجراءات عالية الخطورة أو الحرجة؛ لا يوجد شرط /ask_ai ولا تأكيد إضافي للخطوات العادية.",
+        "صلاحيات الإجراءات عبر Talk",
+        "حدد إجراءات Discord المتاحة عبر المحادثة والقنوات والرتب المسموحة لكل إجراء. يعاد فحص الصلاحيات الحقيقية عند التنفيذ، وتبقى الحمايات الإلزامية فعالة.",
         false,
       );
       const safety = cfg.safety || {};
@@ -940,7 +935,7 @@
         "prime-ai-help",
         "PRIME لا يمنح أي صلاحية بنفسه. تُفحص صلاحيات Discord الحقيقية، وتُفحص رتبة المستخدم والـbot وتسلسل الرتب والقيود لكل طلب. الطلب الملتبس فقط يتوقف ويطلب توضيحاً؛ الإجراءات الخطرة تبقى خلف تأكيد واحد فقط.",
       ));
-      addControlSection("actions", actionSection);
+      addControlSection("talk", actionSection);
 
       const moderation = cfg.moderation || {};
       const categoryLabels = {
@@ -1022,8 +1017,8 @@
 
       const natural = cfg.natural_commands || {};
       const naturalSection = controlDisclosure(
-        "الأوامر الطبيعية",
-        "عند اختيار قناة Talk يرد PRIME تلقائياً على الرسائل المسموحة فيها فقط. تُحفظ محادثات PRIME المختارة لاستعادة السياق، مع فصلها حسب الخادم والقناة والعضو والموضوع؛ مدة الحفظ قابلة للضبط أدناه.",
+        "التفعيل وقناة Talk",
+        "تحكم بمتى يرد PRIME وأين يرد تلقائياً. تُحفظ محادثات PRIME المختارة لاستعادة السياق مع فصلها حسب الخادم والقناة والعضو والموضوع؛ مدة الحفظ قابلة للضبط أدناه.",
         true,
       );
       const naturalGrid = el("div", "prime-ai-control-grid");
@@ -1032,6 +1027,11 @@
         controlToggle("natural_commands.enabled", "تفعيل الأوامر الطبيعية", natural.enabled),
         controlToggle("activation.mention", "التفعيل عند منشن PRIME", cfg.activation && cfg.activation.mention),
         controlToggle("activation.reply", "التفعيل عند الرد على PRIME", cfg.activation && cfg.activation.reply),
+        controlToggle(
+          "activation.wake_word",
+          "الاستجابة عند النداء «يا برايم» أو Hey Prime",
+          !cfg.activation || cfg.activation.wake_word !== false,
+        ),
         controlToggle(
           "talk_channel.enabled",
           "الرد تلقائياً في قناة Talk المحددة فقط",
@@ -1043,8 +1043,6 @@
           talkChannel.channel_id || "",
           channels,
         ),
-        controlSelect("access.allowed_roles", "رتب PRIME AI المسموحة", cfg.access && cfg.access.allowed_roles, roles, true),
-        controlToggle("response.reply_behavior", "الرد مع اقتباس الرسالة", cfg.response && cfg.response.reply_behavior),
         controlSelect("natural_commands.clarification_behavior", "التعامل مع الأسماء المتشابهة", natural.clarification_behavior, [
           { value: "ask", label: "اطلب التحديد" },
           { value: "show_matches", label: "اعرض النتائج واطلب الاختيار" },
@@ -1060,18 +1058,19 @@
         "prime-ai-help",
         "قناة Talk تقيّد رسائل المحادثة الطبيعية بها فقط؛ لا تفعّل الرد على الرسائل غير الموجّهة إلى PRIME، وتبقى أوامر Slash خاضعة لقائمة قنوات PRIME AI.",
       ));
-      addControlSection("modes", naturalSection);
+      addControlSection("talk", naturalSection);
 
       const accessSection = controlDisclosure(
         "الصلاحيات والوصول",
-        "تقييد قنوات PRIME AI والرتب والحد الأدنى للصلاحية.",
-        false,
+        "حدد من يستطيع استخدام Talk: الصلاحية المطلوبة، القنوات والرتب المسموحة أو المحظورة.",
+        true,
       );
       accessSection.content.append(controlSelect("access.minimum_permission", "أقل صلاحية مطلوبة", cfg.access && cfg.access.minimum_permission, permissions));
       const accessGrid = el("div", "prime-ai-control-grid");
       accessGrid.append(
         controlSelect("access.allowed_channels", "قنوات PRIME AI المسموحة", cfg.access && cfg.access.allowed_channels, channels, true),
         controlSelect("access.blocked_channels", "القنوات المحظورة", cfg.access && cfg.access.blocked_channels, channels, true),
+        controlSelect("access.allowed_roles", "رتب PRIME AI المسموحة", cfg.access && cfg.access.allowed_roles, roles, true),
         controlSelect("access.blocked_roles", "الرتب المحظورة", cfg.access && cfg.access.blocked_roles, roles, true),
       );
       if (cfg.access && cfg.access.legacy_allowlist_conflict) {
@@ -1083,7 +1082,7 @@
         accessSection.content.append(warning);
       }
       accessSection.content.append(accessGrid);
-      addControlSection("permissions", accessSection);
+      addControlSection("talk", accessSection);
 
       const contextSection = controlDisclosure(
         "سياق المحادثة",
@@ -1101,7 +1100,7 @@
         ),
       );
       contextSection.content.append(contextGrid);
-      addControlSection("context", contextSection);
+      addControlSection("talk", contextSection);
 
       const personalitySection = controlDisclosure(
         "الشخصية",
@@ -1139,7 +1138,7 @@
         controlInput("personality.custom_instructions", "تعليمات إضافية", personality.custom_instructions, { multiline: true, maxLength: 1000 }),
       );
       personalitySection.content.append(personalityGrid);
-      addControlSection("personality", personalitySection);
+      addControlSection("talk", personalitySection);
 
       const provider = cfg.provider || {};
       const providerSection = controlDisclosure(
@@ -1174,6 +1173,7 @@
       const responseGrid = el("div", "prime-ai-control-grid");
       responseGrid.append(
         controlInput("response.maximum_length", "أقصى طول للإجابة", response.maximum_length, { type: "number", min: 100, max: 3500, step: 50 }),
+        controlToggle("response.reply_behavior", "الرد مع اقتباس الرسالة", response.reply_behavior),
         controlSelect("response.mention_behavior", "السماح بالإشارات", response.mention_behavior, [
           { value: "none", label: "منع الإشارات" }, { value: "user", label: "صاحب الطلب فقط" }, { value: "roles", label: "رتب صاحب الطلب فقط" },
         ]),
@@ -1187,7 +1187,7 @@
         ["emoji", "السماح بالإيموجي"],
       ].forEach(([key, label]) => responseGrid.append(controlToggle(`response.${key}`, label, response[key])));
       responseSection.content.append(responseGrid);
-      addControlSection("responses", responseSection);
+      addControlSection("talk", responseSection);
 
       const memory = cfg.memory || {};
       const memorySection = controlDisclosure(
@@ -1211,13 +1211,13 @@
       addControlSection("memory", memorySection);
 
       const limitsSection = controlDisclosure(
-        "حدود الاستخدام والاحتفاظ",
-        "الحدود مستقلة حسب المستخدم والقناة والخادم، مع مدد احتفاظ قابلة للضبط.",
+        "حدود إجراءات PRIME وسجلاته",
+        "حدود الإجراءات والإشراف ومدة الاحتفاظ بالذكريات والتدقيق.",
         false,
       );
       const rates = cfg.rate_limits || {};
       const rateGrid = el("div", "prime-ai-control-grid");
-      ["user", "role", "channel", "guild", "action", "dangerous_action", "moderation"].forEach((key) => {
+      ["action", "dangerous_action", "moderation"].forEach((key) => {
         const policy = rates[key] || {};
         rateGrid.append(
           controlInput(`rate_limits.${key}.limit`, `حد ${key}`, policy.limit, { type: "number", min: 1, max: 10000, step: 1 }),
@@ -1226,16 +1226,38 @@
       });
       const retentionGrid = el("div", "prime-ai-control-grid");
       const retentionLabels = {
-        conversation_days: "حفظ محادثات PRIME المختارة (0 = إيقاف)",
         memory_days: "حفظ ذكريات PRIME",
         audit_days: "سجلات التدقيق",
         moderation_days: "سجلات الإشراف",
       };
       Object.entries(cfg.retention || {}).forEach(([key, value]) => {
+        if (key === "conversation_days") return;
         retentionGrid.append(controlInput(`retention.${key}`, `${retentionLabels[key] || `الاحتفاظ: ${key}`} (أيام)`, value, { type: "number", min: 0, max: 3650, step: 1 }));
       });
       limitsSection.content.append(rateGrid, retentionGrid);
       addControlSection("limits", limitsSection);
+
+      const talkLimitsSection = controlDisclosure(
+        "حدود Talk والاحتفاظ",
+        "حدود الطلبات الحوارية بحسب المستخدم والرتبة والقناة والخادم، ومدة حفظ محادثات PRIME المختارة.",
+        false,
+      );
+      const talkRateGrid = el("div", "prime-ai-control-grid");
+      ["user", "role", "channel", "guild"].forEach((key) => {
+        const policy = rates[key] || {};
+        talkRateGrid.append(
+          controlInput(`rate_limits.${key}.limit`, `حد ${key}`, policy.limit, { type: "number", min: 1, max: 10000, step: 1 }),
+          controlInput(`rate_limits.${key}.window_seconds`, `نافذة ${key} بالثواني`, policy.window_seconds, { type: "number", min: 1, max: 86400, step: 1 }),
+        );
+      });
+      const conversationRetention = controlInput(
+        "retention.conversation_days",
+        "مدة حفظ محادثات PRIME المختارة (أيام، 0 للإيقاف)",
+        (cfg.retention || {}).conversation_days,
+        { type: "number", min: 0, max: 3650, step: 1 },
+      );
+      talkLimitsSection.content.append(talkRateGrid, conversationRetention);
+      addControlSection("talk", talkLimitsSection);
 
       const personaSection = controlDisclosure(
         "استثناءات القنوات والرتب",
@@ -1313,7 +1335,7 @@
         button("حذف استثناء الرتبة", "remove-role-override", "prime-ai-button prime-ai-button-secondary", !roleId),
       );
       personaSection.content.append(personaActions);
-      addControlSection("personas", personaSection);
+      addControlSection("talk", personaSection);
 
       controlSections
         .filter((section) => section.key === destination)
@@ -1729,7 +1751,17 @@
       if (state.disposed) return;
       const page = el("div", "prime-ai-control");
       page.dir = "rtl";
-      const groups = [
+      const groups = config.standalone
+        ? [
+          {
+            id: "talk",
+            label: "Talk",
+            destinations: [
+              { id: "talk", label: "إعدادات Talk", description: "القناة والصلاحيات وسلوك محادثة PRIME." },
+            ],
+          },
+        ]
+        : [
         {
           id: "home",
           label: "الرئيسية",
@@ -1742,10 +1774,7 @@
           id: "intelligence",
           label: "الذكاء",
           destinations: [
-            { id: "context", label: "السياق", description: "حدود المحادثة والرسالة المقتبسة." },
             { id: "memory", label: "الذاكرة", description: "سياسة الذاكرة وملاحظات الخادم." },
-            { id: "personality", label: "الشخصية", description: "اللغة واللهجة وطابع الإجابة." },
-            { id: "personas", label: "شخصيات القنوات", description: "استثناءات الشخصية حسب القناة أو الرتبة." },
           ],
         },
         {
@@ -1753,7 +1782,7 @@
           label: "القدرات",
           destinations: [
             { id: "skills", label: "المهارات", description: "تفعيل المهارات وصلاحياتها." },
-            { id: "actions", label: "الإجراءات", description: "الإجراءات الإدارية التلقائية وفحوصها." },
+              { id: "actions", label: "طلبات التنفيذ", description: "طلبات PRIME المحفوظة والتأكيدات المعلقة." },
             { id: "modes", label: "الأنماط", description: "أنماط PRIME AI والتفعيل." },
           ],
         },
@@ -1761,7 +1790,6 @@
           id: "safety",
           label: "السلامة",
           destinations: [
-            { id: "permissions", label: "الصلاحيات", description: "حدود الوصول حسب القناة والرتبة." },
             { id: "moderation", label: "الإشراف", description: "تصنيف التنبيهات ومراجعتها." },
             { id: "sandbox", label: "Sandbox", description: "حالة المعاينة والتنفيذ التجريبي." },
           ],
@@ -1771,8 +1799,7 @@
           label: "محرك الذكاء الاصطناعي",
           destinations: [
             { id: "providers", label: "المزوّد", description: "إعدادات مزوّد Gemini الحالية." },
-            { id: "responses", label: "الردود", description: "تنسيق الردود والإشارات والخصوصية." },
-            { id: "limits", label: "حدود الاستخدام", description: "معدلات الطلبات والاحتفاظ." },
+            { id: "limits", label: "حدود الإجراءات", description: "حدود الإجراءات ومدة الاحتفاظ بالسجلات." },
           ],
         },
         {
@@ -1820,7 +1847,10 @@
       notice.append(el("p", "", "يعمل المساعد بجانب أنظمة الخبرة والسلاسل والاشتراكات دون استبدالها. تُرسل الأسئلة والسياق والذكريات المسموح بها إلى Google Gemini لتوليد الإجابة؛ لا يحفظ PRIME نصوص المحادثات في قاعدة بياناته."));
       page.append(notice);
 
-      const workspace = el("div", "prime-ai-workspace");
+      const workspace = el(
+        "div",
+        `prime-ai-workspace${config.standalone ? " prime-ai-workspace-standalone" : ""}`,
+      );
       const nav = el("nav", "prime-ai-sidebar");
       nav.setAttribute("aria-label", "أقسام PRIME AI");
       nav.append(el("span", "prime-ai-sidebar-title", "مركز التحكم"));
@@ -1862,17 +1892,16 @@
         case "permissions":
         case "personality":
         case "personas":
-        case "actions":
+        case "talk":
         case "moderation":
         case "modes":
         case "providers":
         case "responses":
         case "limits":
-          if (active.id === "actions") {
-            content.append(renderControlCard(active.id), renderOperationCard());
-          } else {
-            content.append(renderControlCard(active.id));
-          }
+          content.append(renderControlCard(active.id));
+          break;
+        case "actions":
+          content.append(renderOperationCard());
           break;
         case "memory":
           content.append(renderControlCard("memory"), renderMemoriesCard());
@@ -1895,7 +1924,8 @@
         default:
           content.append(renderOverviewCard());
       }
-      workspace.append(nav, content);
+      if (!config.standalone) workspace.append(nav);
+      workspace.append(content);
       page.append(workspace);
       container.replaceChildren(page);
     }

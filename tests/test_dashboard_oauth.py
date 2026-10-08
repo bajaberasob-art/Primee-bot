@@ -168,7 +168,7 @@ class OAuthTests(unittest.IsolatedAsyncioTestCase):
         authenticated = request(cookies=f"bot_session={sid}")
         page = await dashboard.index(authenticated)
         self.assertNotIn("<b>server</b>", page.text)
-        self.assertIn('src="static/app.js"', page.text)
+        self.assertRegex(page.text, r'src="static/app\.js(?:\?[^"]*)?"')
         me = await dashboard.api_me(authenticated)
         self.assertEqual(me.status, 200)
         self.assertIn('"csrf"', me.text)

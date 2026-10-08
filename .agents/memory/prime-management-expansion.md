@@ -10,3 +10,9 @@ The owner chose a per-server PRIME role map for Admin, Moderator, and Staff. Det
 **Why:** The project owner explicitly required that current systems and stored data remain intact and that enhancements not break existing features.
 
 **How to apply:** Before adding admin coverage, map the current slash-command, dashboard, AI, and persistence paths; reuse them, keep changes incremental, and verify affected existing behavior. Apply the role map as an additive shared gate, never as a source of Discord permissions.
+
+PRIME Talk is a distinct top-level dashboard destination. Keep conversation activation, access rules, response/context/personality settings, retention, and the permissions for actions requested through Talk together there. Keep AI operations, audit history, and non-conversation controls in the AI area.
+
+**Why:** The owner requested a dedicated Talk menu containing its editable permissions and settings.
+
+**How to apply:** Add future Talk-specific controls to that destination without duplicating their underlying settings. Preserve server-side permission checks and mandatory safeguards for any Discord actions.

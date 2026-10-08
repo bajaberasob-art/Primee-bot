@@ -194,10 +194,9 @@ class PrimeAIDashboardPhaseFiveContractTests(unittest.TestCase):
             source = source_file.read()
 
         destinations = (
-            "overview", "general", "context", "memory", "personality",
-            "personas", "skills", "permissions", "actions", "moderation",
-            "modes", "sandbox", "providers", "responses", "limits",
-            "audit", "analytics", "testing",
+            "overview", "general", "memory", "skills", "actions", "moderation",
+            "modes", "talk", "sandbox", "providers", "limits", "audit",
+            "analytics", "testing",
         )
         for destination in destinations:
             with self.subTest(destination=destination):
@@ -209,6 +208,23 @@ class PrimeAIDashboardPhaseFiveContractTests(unittest.TestCase):
         self.assertIn("preview_only", source)
         self.assertIn("لا يستدعي منفّذ الإجراءات", source)
         self.assertIn('request("POST", `${guildPath}/test`, { prompt })', source)
+
+    def test_talk_is_a_standalone_dashboard_route_with_its_own_controls(self):
+        root = os.path.join(os.path.dirname(__file__), "..", "dashboard")
+        with open(os.path.join(root, "app.js"), encoding="utf-8") as source_file:
+            app_source = source_file.read()
+        with open(os.path.join(root, "ai-control.js"), encoding="utf-8") as source_file:
+            control_source = source_file.read()
+
+        self.assertIn('talk: { label: "Talk"', app_source)
+        self.assertIn('standalone: view === "talk"', app_source)
+        self.assertIn('id: "talk"', control_source)
+        self.assertIn('addControlSection("talk", accessSection)', control_source)
+        self.assertIn('addControlSection("talk", naturalSection)', control_source)
+        self.assertIn('addControlSection("talk", actionSection)', control_source)
+        self.assertIn('addControlSection("talk", responseSection)', control_source)
+        self.assertIn('addControlSection("talk", talkLimitsSection)', control_source)
+        self.assertIn('case "talk":', control_source)
 
 
 class PrimeAIDiscordResponseTests(unittest.IsolatedAsyncioTestCase):

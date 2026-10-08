@@ -682,6 +682,7 @@
     economy: { label: "الاقتصاد", icon: "◌", hint: "Economy" },
     community: { label: "المجتمع", icon: "◎", hint: "Community" },
     ai: { label: "الذكاء الاصطناعي", icon: "✧", hint: "AI Tools" },
+    talk: { label: "Talk", icon: "◉", hint: "محادثة PRIME" },
     appearance: { label: "المظهر الشخصي", icon: "◐", hint: "Personal Theme" },
     settings: { label: "الإعدادات", icon: "⚙", hint: "Configuration" },
     system: { label: "النظام", icon: "⌁", hint: "Runtime" },
@@ -836,6 +837,7 @@
       navButton("economy"),
       navButton("community"),
       navButton("ai"),
+      navButton("talk"),
       navButton("appearance"),
       navButton("settings"),
       navButton("system"),
@@ -843,7 +845,7 @@
     const moreButton = el(
       "button",
       {
-         class: `nav-item ${["onboarding", "gaming", "subscriptions", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "appearance", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
+         class: `nav-item ${["onboarding", "gaming", "subscriptions", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "talk", "appearance", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
         type: "button",
         "aria-expanded": "false",
         onClick: () => {
@@ -9714,7 +9716,7 @@
     else if (view === "analytics") main.append(analyticsView());
     else if (view === "economy") main.append(economyView());
     else if (view === "leveling") main.append(levelingView());
-    else if (view === "ai") {
+    else if (view === "ai" || view === "talk") {
       const panel = el("div", { class: "prime-ai-host" });
       main.append(panel);
       if (window.PrimeAIControl?.mount) {
@@ -9722,6 +9724,8 @@
           guildId: state.guild.id,
           request: primeAIRequest,
           toast,
+          initialDestination: view === "talk" ? "talk" : "overview",
+          standalone: view === "talk",
         });
       } else {
         panel.append(
