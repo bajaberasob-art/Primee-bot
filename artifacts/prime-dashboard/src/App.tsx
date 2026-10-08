@@ -26,9 +26,9 @@ function Home() {
         </p>
         <a
           className="mt-6 inline-flex rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white hover:bg-blue-500"
-          href="/api/dashboard/__local_login"
+          href="/api/dashboard/"
         >
-          فتح لوحة التحكم مباشرة
+          الانتقال إلى تسجيل الدخول
         </a>
       </div>
     </div>

@@ -6,21 +6,27 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
-const dashboardPort = Number(process.env["DASHBOARD_PORT"] ?? "8099");
+const dashboardPort = Number(
+  process.env["NODE_ENV"] === "development"
+    ? (process.env["DASHBOARD_DEV_PORT"] ?? "8008")
+    : (process.env["DASHBOARD_PORT"] ?? "8099"),
+);
+const dashboardUiPort = Number(process.env["DASHBOARD_UI_PORT"] ?? "8099");
 
-function proxyDashboard(
+function proxyToPort(
   req: express.Request,
   res: express.Response,
+  targetPort: number,
 ): void {
   const proxyRequest = http.request(
     {
       hostname: "127.0.0.1",
-      port: dashboardPort,
+      port: targetPort,
       method: req.method,
       path: req.url || "/",
       headers: {
         ...req.headers,
-        host: `127.0.0.1:${dashboardPort}`,
+        host: `127.0.0.1:${targetPort}`,
         "x-forwarded-host":
           req.headers["x-forwarded-host"] ?? req.headers.host ?? "",
         "x-forwarded-proto":
@@ -48,6 +54,20 @@ function proxyDashboard(
   });
 
   req.pipe(proxyRequest);
+}
+
+function proxyDashboard(
+  req: express.Request,
+  res: express.Response,
+): void {
+  proxyToPort(req, res, dashboardPort);
+}
+
+function proxyDashboardUi(
+  req: express.Request,
+  res: express.Response,
+): void {
+  proxyToPort(req, res, dashboardUiPort);
 }
 
 function proxyPublicLeaderboard(
@@ -82,14 +102,14 @@ app.use(cors());
 
 // The public Replit domain is served by this API service. Keep the bot's
 // aiohttp dashboard on its own port, but expose it through the same domain.
-app.get("/", proxyDashboard);
+app.get("/", proxyDashboardUi);
 app.get("/dashboard", (_req, res) => {
   res.redirect(302, "/");
 });
 app.get("/dashboard/", (_req, res) => {
   res.redirect(302, "/");
 });
-app.use("/dashboard", proxyDashboard);
+app.use("/dashboard", proxyDashboardUi);
 app.get("/api", (_req, res) => {
   res.redirect(302, "/api/dashboard/");
 });
@@ -117,7 +137,7 @@ app.use((req, res, next) => {
     next();
     return;
   }
-  proxyDashboard(req, res);
+  proxyDashboardUi(req, res);
 });
 
 export default app;

@@ -5,6 +5,10 @@ localPort = 1000
 externalPort = 3000
 
 [[ports]]
+localPort = 8008
+externalPort = 8008
+
+[[ports]]
 localPort = 8080
 externalPort = 80
 
@@ -28,3 +32,26 @@ args = ["sh", "-c", "/nix/store/s4ckxp77ljlikarkka88ba7qr5mlka97-python3-wrapper
 
 [deployment.run.env]
 file = "main.py"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "PRIME Bot + Dashboard Backend"
+
+[[workflows.workflow]]
+name = "PRIME Bot + Dashboard Backend"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "DASHBOARD_LOCAL_LOGIN=0 DASHBOARD_BASE_PATH=/api/dashboard/ PORT=8008 DASHBOARD_PORT=8008 python main.py"

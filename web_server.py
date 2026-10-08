@@ -5601,13 +5601,12 @@ async def static_asset(req):
         "leveling-card-assets.css": "text/css",
         "ai-control.js": "application/javascript",
         "app.js": "application/javascript",
-        "login-hero-clean.png": "image/png",
     }
     if name not in types:
         raise web.HTTPNotFound()
     asset = DASHBOARD_DIR / name
-    if name.endswith(".png"):
-        return web.Response(body=asset.read_bytes(), content_type=types[name])
+    if not asset.is_file():
+        raise web.HTTPNotFound()
     return web.Response(text=asset.read_text("utf-8"), content_type=types[name], charset="utf-8")
 
 
@@ -5773,15 +5772,6 @@ async def index(req):
                     border-radius: 50%;
                     background: rgba(63, 111, 255, .27);
                     filter: blur(22px);
-                }
-                .hero-art img {
-                    position: relative;
-                    z-index: 1;
-                    display: block;
-                    width: min(100%, 350px);
-                    height: 100%;
-                    object-fit: contain;
-                    filter: drop-shadow(0 18px 24px rgba(45, 84, 255, .28));
                 }
                 .hero-art::after {
                     content: "";
@@ -6090,7 +6080,6 @@ async def index(req):
                     }
                     .brand-panel::before { top: 15px; left: 24px; font-size: 100px; }
                     .hero-art { height: 224px; margin-top: 16px; margin-bottom: 16px; }
-                    .hero-art img { width: min(100%, 306px); }
                     .smart-tag { top: 24px; right: 3px; }
                     .brand-copy { margin: 0; }
                     .brand-copy h1 { margin-top: 17px; font-size: clamp(2rem, 10vw, 3rem); line-height: 1.2; }
@@ -6124,7 +6113,6 @@ async def index(req):
                     </div>
                     <div class="hero-art" aria-hidden="true">
                         <span class="smart-tag">مساحة إدارتك الذكية</span>
-                        <img src="static/login-hero-clean.png" alt="">
                     </div>
                     <div class="brand-copy">
                         <span class="eyebrow">مساحة الإدارة الذكية</span>
