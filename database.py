@@ -2713,6 +2713,8 @@ async def init_db() -> None:
                 "ON analytics_voice_sessions (guild_id, started_at);"
             )
             await _ensure_canonical_views(db)
+            from temp_voice_store import init_schema as init_temp_voice_schema
+            await init_temp_voice_schema(db)
 
             await db.commit()
             logger.info("[DB] جميع الجداول والفهارس تعمل بكفاءة عالية.")

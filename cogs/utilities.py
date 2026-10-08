@@ -1752,6 +1752,10 @@ class Utilities(commands.Cog):
         before: discord.VoiceState,
         after: discord.VoiceState,
     ):
+        # The upgraded persistent cog owns temp voice events; keep fallback for
+        # installations which intentionally load Utilities alone.
+        if self.bot.get_cog("TempVoice"):
+            return
         # 1. إنشاء روم صوتي مؤقت مع لوحة التحكم
         if after.channel and after.channel.name == HUB_NAME:
             guild, category = mem.guild, after.channel.category
@@ -1793,6 +1797,18 @@ class Utilities(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_voice(self, itx: discord.Interaction):
+        upgraded = self.bot.get_cog("TempVoice")
+        if upgraded:
+            await itx.response.defer(ephemeral=True)
+            import temp_voice_store
+            snap = await temp_voice_store.get_config(itx.guild.id)
+            try:
+                await upgraded.setup_system(itx.guild, snap["revision"])
+            except (ValueError, discord.HTTPException) as error:
+                await itx.followup.send(f"تعذر التجهيز: {error}", ephemeral=True)
+                return
+            await itx.followup.send("تم تجهيز نظام الرومات المؤقتة ونشر لوحة التحكم.", ephemeral=True)
+            return
         category = discord.utils.get(itx.guild.categories, name="🔊 القنوات التفاعلية")
         if category is None:
             category = await itx.guild.create_category("🔊 القنوات التفاعلية")
