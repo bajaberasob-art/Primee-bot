@@ -20,6 +20,8 @@ from database import (
     wal_checkpoint_loop,
 )
 from cogs.utilities import dynamic_prefix
+import prime_ai_intelligence
+import prime_ai_persistence
 from interaction_runtime import (
     install_ui_guards,
     send_interaction_message,
@@ -256,6 +258,8 @@ class EnterpriseBot(commands.Bot):
             with contextlib.suppress(Exception):
                 await self.session.close()
         self.session = None
+        with contextlib.suppress(Exception):
+            await prime_ai_persistence.close_durable_store()
 
     async def _reset_http_session_for_retry(self) -> None:
         """Replace the shared HTTP session without re-running bot setup."""
@@ -278,6 +282,15 @@ class EnterpriseBot(commands.Bot):
 
         try:
             await init_db()
+            await prime_ai_intelligence.ensure_schema()
+            durable_enabled = await prime_ai_persistence.start_durable_store()
+            if durable_enabled:
+                restored = await prime_ai_persistence.restore_from_durable_store()
+                logger.info(
+                    "♻️ تمت استعادة ذاكرة PRIME AI الدائمة: %s سجل ذاكرة و%s ملف مستخدم.",
+                    restored["memories"],
+                    restored["profiles"],
+                )
             logger.info("📦 تم التحقق من سلامة قاعدة البيانات بنجاح.")
             self._wal_checkpoint_task = asyncio.create_task(wal_checkpoint_loop())
             self._analytics_writer_task = asyncio.create_task(
@@ -400,6 +413,7 @@ class EnterpriseBot(commands.Bot):
             self.dashboard_runner = None
         if self.session and not self.session.closed:
             await self.session.close()
+        await prime_ai_persistence.close_durable_store()
         await super().close()
 
     async def _gateway_startup_watchdog(self):

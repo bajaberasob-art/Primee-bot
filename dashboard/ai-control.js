@@ -1023,7 +1023,7 @@
       const natural = cfg.natural_commands || {};
       const naturalSection = controlDisclosure(
         "الأوامر الطبيعية",
-        "توجيه الأسئلة إلى مهارات القراءة المفعّلة؛ إعدادات القنوات والرتب تستخدم سياسة PRIME AI الحالية.",
+        "عند اختيار قناة Talk يرد PRIME تلقائياً على الرسائل المسموحة فيها فقط. تُحفظ محادثات PRIME المختارة لاستعادة السياق، مع فصلها حسب الخادم والقناة والعضو والموضوع؛ مدة الحفظ قابلة للضبط أدناه.",
         true,
       );
       const naturalGrid = el("div", "prime-ai-control-grid");
@@ -1034,7 +1034,7 @@
         controlToggle("activation.reply", "التفعيل عند الرد على PRIME", cfg.activation && cfg.activation.reply),
         controlToggle(
           "talk_channel.enabled",
-          "حصر الردود الطبيعية في قناة Talk",
+          "الرد تلقائياً في قناة Talk المحددة فقط",
           talkChannel.enabled,
         ),
         controlSelect(
@@ -1225,8 +1225,14 @@
         );
       });
       const retentionGrid = el("div", "prime-ai-control-grid");
+      const retentionLabels = {
+        conversation_days: "حفظ محادثات PRIME المختارة (0 = إيقاف)",
+        memory_days: "حفظ ذكريات PRIME",
+        audit_days: "سجلات التدقيق",
+        moderation_days: "سجلات الإشراف",
+      };
       Object.entries(cfg.retention || {}).forEach(([key, value]) => {
-        retentionGrid.append(controlInput(`retention.${key}`, `الاحتفاظ: ${key} (أيام)`, value, { type: "number", min: 0, max: 3650, step: 1 }));
+        retentionGrid.append(controlInput(`retention.${key}`, `${retentionLabels[key] || `الاحتفاظ: ${key}`} (أيام)`, value, { type: "number", min: 0, max: 3650, step: 1 }));
       });
       limitsSection.content.append(rateGrid, retentionGrid);
       addControlSection("limits", limitsSection);

@@ -4,7 +4,7 @@ import math
 import logging
 import asyncio
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import discord
@@ -15,6 +15,9 @@ import prime_ai_service
 import prime_ai_control
 import prime_ai_runtime
 import prime_ai_intelligence
+import prime_ai_persistence
+import database
+import management_access
 from interaction_runtime import send_interaction_message
 
 LOGGER = logging.getLogger("AITools")
@@ -254,7 +257,8 @@ class PrimeAIForgetDataView(discord.ui.View):
             content=(
                 "حُذفت بيانات PRIME AI الشخصية: "
                 f"{result['memories']} ذاكرة و{result['profile']} ملف مستخدم. "
-                "ومُسح سياقك المؤقت في هذا الخادم."
+                f"ومُسحت {result['conversations']} محادثة محفوظة وسياقاتك المؤقتة "
+                "في هذا الخادم."
             ),
             view=self,
         )
@@ -397,6 +401,11 @@ async def translate_text(
 
 
 class AITools(commands.Cog):
+    memory = app_commands.Group(
+        name="memory",
+        description="إدارة الذاكرة الدائمة الخاصة بـ PRIME AI",
+    )
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._retention_task: asyncio.Task | None = None
@@ -894,8 +903,13 @@ class AITools(commands.Cog):
         context: dict,
         mode: str,
         audit_action: str,
+        turn_key: str | None = None,
+        user_message_id: int | None = None,
+        reference_message_id: int | None = None,
+        mentioned_user_ids: list[int] | None = None,
+        thread_id: int | None = None,
     ) -> str:
-        """Generate a response with per-user transient context and durable low-risk profile."""
+        """Generate a response with isolated, expiring durable conversation context."""
         store = prime_ai_runtime.CONVERSATION_STATE
         channel_id = getattr(channel, "id", None)
         key = (
@@ -909,6 +923,13 @@ class AITools(commands.Cog):
             max_messages = 12
         max_messages = max(0, min(max_messages, 30))
         effective_history_limit = max_messages - (max_messages % 2)
+        try:
+            retention_days = int(
+                config.get("retention", {}).get("conversation_days", 7)
+            )
+        except (TypeError, ValueError):
+            retention_days = 7
+        retention_days = max(0, min(retention_days, 3650))
 
         if guild is not None:
             profile = await prime_ai_intelligence.load_user_profile(
@@ -934,13 +955,27 @@ class AITools(commands.Cog):
         if key is None:
             return await generate([])
 
+        detected_topic = prime_ai_intelligence._extract_topic(question)
+        topic_key = await prime_ai_persistence.resolve_topic_key(
+            int(guild.id),
+            int(channel_id),
+            int(actor.id),
+            detected_topic,
+            reference_message_id,
+            allow_inherit=prime_ai_persistence.is_follow_up(question),
+        )
         async with store.lock_for(key):
-            conversation = (
-                store.get(key)[-effective_history_limit:]
-                if effective_history_limit
-                else []
-            )
             context_epoch = store.user_epoch(guild.id, actor.id)
+            conversation = []
+            if effective_history_limit and retention_days > 0:
+                conversation = await prime_ai_persistence.load_turns(
+                    int(guild.id),
+                    int(channel_id),
+                    int(actor.id),
+                    topic_key,
+                    reference_message_id=reference_message_id,
+                    limit=effective_history_limit // 2,
+                )
             answer = await generate(conversation)
 
             if prime_ai_intelligence.response_repeats_recent(answer, conversation):
@@ -966,6 +1001,29 @@ class AITools(commands.Cog):
                 max_messages=effective_history_limit,
                 expected_epoch=context_epoch,
             )
+            if (
+                retention_days > 0
+                and effective_history_limit
+                and store.user_epoch(guild.id, actor.id) == context_epoch
+            ):
+                await prime_ai_persistence.record_turn(
+                    turn_key=str(
+                        turn_key
+                        or f"generated:{guild.id}:{channel_id}:{actor.id}:"
+                        f"{int(asyncio.get_running_loop().time() * 1000)}"
+                    ),
+                    guild_id=int(guild.id),
+                    channel_id=int(channel_id),
+                    thread_id=thread_id,
+                    user_id=int(actor.id),
+                    topic_key=topic_key,
+                    user_message_id=user_message_id,
+                    reference_message_id=reference_message_id,
+                    mentioned_user_ids=mentioned_user_ids,
+                    user_content=question,
+                    assistant_content=answer,
+                    retention_days=retention_days,
+                )
             if store.user_epoch(guild.id, actor.id) == context_epoch:
                 try:
                     # Keep the durable profile privacy-safe: persist only explicit,
@@ -982,8 +1040,21 @@ class AITools(commands.Cog):
                     LOGGER.exception("[AI] Could not persist PRIME user profile.")
             return answer
 
-    @staticmethod
-    def _record_message_turn(guild, actor, channel, user_text, assistant_text, config):
+    async def _record_message_turn(
+        self,
+        guild,
+        actor,
+        channel,
+        user_text,
+        assistant_text,
+        config,
+        *,
+        turn_key: str | None = None,
+        user_message_id: int | None = None,
+        assistant_message_id: int | None = None,
+        reference_message_id: int | None = None,
+        mentioned_user_ids: list[int] | None = None,
+    ):
         channel_id = getattr(channel, "id", None)
         if guild is None or channel_id is None:
             return
@@ -1000,21 +1071,373 @@ class AITools(commands.Cog):
             assistant_text,
             max_messages=max_messages,
         )
-
-        async def persist():
-            try:
-                await prime_ai_intelligence.update_user_profile(
-                    guild.id,
-                    actor.id,
-                    channel_id=channel_id,
-                    topic=prime_ai_intelligence._extract_topic(user_text),
-                    intent="SERVER_ACTION",
-                    preferences=prime_ai_intelligence.extract_preference_signals(user_text),
+        try:
+            retention_days = max(
+                0,
+                min(
+                    int(config.get("retention", {}).get("conversation_days", 7)),
+                    3650,
+                ),
+            )
+        except (TypeError, ValueError):
+            retention_days = 7
+        try:
+            if retention_days > 0 and max_messages >= 2:
+                topic_key = await prime_ai_persistence.resolve_topic_key(
+                    int(guild.id),
+                    int(channel_id),
+                    int(actor.id),
+                    prime_ai_intelligence._extract_topic(user_text),
+                    reference_message_id,
+                    allow_inherit=prime_ai_persistence.is_follow_up(user_text),
                 )
-            except Exception:
-                LOGGER.exception("[AI] Could not persist PRIME action context.")
+                key = str(
+                    turn_key
+                    or f"turn:{guild.id}:{channel_id}:{actor.id}:"
+                    f"{int(asyncio.get_running_loop().time() * 1000)}"
+                )
+                await prime_ai_persistence.record_turn(
+                    turn_key=key,
+                    guild_id=int(guild.id),
+                    channel_id=int(channel_id),
+                    user_id=int(actor.id),
+                    topic_key=topic_key,
+                    user_content=user_text,
+                    assistant_content=assistant_text,
+                    retention_days=retention_days,
+                    thread_id=channel_id if isinstance(channel, discord.Thread) else None,
+                    user_message_id=user_message_id,
+                    assistant_message_id=assistant_message_id,
+                    reference_message_id=reference_message_id,
+                    mentioned_user_ids=mentioned_user_ids,
+                )
+            await prime_ai_intelligence.update_user_profile(
+                guild.id,
+                actor.id,
+                channel_id=channel_id,
+                topic=prime_ai_intelligence._extract_topic(user_text),
+                intent="SERVER_ACTION",
+                preferences=prime_ai_intelligence.extract_preference_signals(user_text),
+            )
+        except Exception:
+            LOGGER.exception("[AI] Could not persist PRIME message context.")
 
-        asyncio.create_task(persist())
+    async def _is_memory_manager(self, interaction: discord.Interaction) -> bool:
+        guild = interaction.guild
+        if guild is None:
+            return False
+        snapshot = await prime_ai_control.get_control_settings(guild.id)
+        allowed, _reason = prime_ai_runtime.access_allowed(
+            snapshot["config"], interaction.user, interaction.channel
+        )
+        if not allowed:
+            return False
+        server_snapshot = await database.get_guild_settings(guild.id)
+        server_settings = server_snapshot.get("settings", {})
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        native_admin = bool(
+            int(interaction.user.id) == int(guild.owner_id or 0)
+            or getattr(permissions, "administrator", False)
+            or getattr(permissions, "manage_guild", False)
+        )
+        if native_admin:
+            return True
+        if not management_access.management_roles_configured(server_settings):
+            return False
+        return management_access.member_has_management_tier(
+            interaction.user, guild, server_settings, "admin"
+        )
+
+    async def _deny_memory_manager(self, interaction: discord.Interaction) -> bool:
+        if await self._is_memory_manager(interaction):
+            return False
+        await interaction.response.send_message(
+            "إدارة الذاكرة تتطلب صلاحية مدير PRIME أو صلاحية إدارة الخادم، "
+            "مع الالتزام بسياسة الوصول الحالية.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
+
+    @memory.command(name="save", description="حفظ حقيقة أو تفضيل في ذاكرة PRIME")
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="الخادم", value="SERVER"),
+            app_commands.Choice(name="قناة محددة", value="CHANNEL"),
+            app_commands.Choice(name="رتبة محددة", value="ROLE"),
+        ],
+        memory_type=[
+            app_commands.Choice(name="حقيقة", value="FACT"),
+            app_commands.Choice(name="تفضيل", value="PREFERENCE"),
+            app_commands.Choice(name="قرار", value="DECISION"),
+            app_commands.Choice(name="قاعدة", value="RULE"),
+            app_commands.Choice(name="سياق", value="CONTEXT"),
+        ],
+    )
+    @app_commands.describe(
+        content="معلومة غير حساسة تريد أن تتذكرها PRIME",
+        scope="من يستطيع استخدام هذه الذاكرة",
+        expires_in_days="0 تعني ذاكرة دائمة مثبتة؛ القيمة الافتراضية 90 يوماً",
+        importance="الأهمية من 1 إلى 5",
+        channel="مطلوب عند اختيار نطاق القناة",
+        role="مطلوب عند اختيار نطاق الرتبة",
+        related_member="عضو مرتبط بالمعلومة، إن وجد",
+    )
+    async def memory_save(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+        scope: app_commands.Choice[str],
+        expires_in_days: app_commands.Range[int, 0, 3650] = 90,
+        importance: app_commands.Range[int, 1, 5] = 3,
+        memory_type: app_commands.Choice[str] | None = None,
+        channel: discord.TextChannel | None = None,
+        role: discord.Role | None = None,
+        related_member: discord.Member | None = None,
+    ):
+        if await self._deny_memory_manager(interaction):
+            return
+        if scope.value == "CHANNEL" and channel is None:
+            return await interaction.response.send_message(
+                "اختر القناة المرتبطة بهذه الذاكرة.", ephemeral=True
+            )
+        if scope.value == "ROLE" and role is None:
+            return await interaction.response.send_message(
+                "اختر الرتبة المرتبطة بهذه الذاكرة.", ephemeral=True
+            )
+        scope_id = (
+            str(channel.id) if scope.value == "CHANNEL"
+            else str(role.id) if scope.value == "ROLE"
+            else ""
+        )
+        try:
+            saved = await prime_ai_service.add_memory(
+                interaction.guild.id,
+                interaction.user.id,
+                content,
+                scope=scope.value,
+                scope_id=scope_id,
+                expires_in_days=int(expires_in_days),
+                memory_type=memory_type.value if memory_type else "FACT",
+                importance=int(importance),
+                source_channel_id=interaction.channel_id,
+                source_message_id=interaction.id,
+                related_user_ids=(
+                    [int(related_member.id)] if related_member is not None else []
+                ),
+            )
+        except ValueError as error:
+            code = str(error)
+            if code == "sensitive_memory_rejected":
+                text = "لا يمكن حفظ بيانات سرية أو مالية أو شخصية حساسة."
+            elif code.startswith("duplicate_memory:"):
+                existing_id = code.partition(":")[2]
+                text = f"هذه المعلومة محفوظة بالفعل؛ راجع الذاكرة #{existing_id} بدلاً من تكرارها."
+            elif code.startswith("memory_conflict_requires_edit:"):
+                existing_id = code.partition(":")[2]
+                text = (
+                    f"قد تتعارض المعلومة مع الذاكرة #{existing_id}. "
+                    f"عدّل الذاكرة الموجودة عبر /memory edit لتسجيل النسخة الجديدة."
+                )
+            else:
+                text = "تعذر حفظ الذاكرة؛ تحقق من النطاق والمحتوى والإعدادات."
+            return await interaction.response.send_message(
+                text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+            )
+        expiry_text = (
+            "دائمة ومثبتة" if saved["pinned"]
+            else f"تنتهي بعد {int(expires_in_days)} يوماً"
+        )
+        await interaction.response.send_message(
+            f"حُفظت الذاكرة رقم {saved['id']} ({saved['memory_type']}, "
+            f"الأهمية {saved['importance']})؛ {expiry_text}.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @memory.command(name="list", description="عرض الذكريات المشتركة المحفوظة")
+    async def memory_list(self, interaction: discord.Interaction):
+        if await self._deny_memory_manager(interaction):
+            return
+        memories = await prime_ai_service.list_memories(
+            interaction.guild.id, limit=100, include_disabled=True
+        )
+        if not memories:
+            return await interaction.response.send_message(
+                "لا توجد ذكريات مشتركة محفوظة.", ephemeral=True
+            )
+        lines = []
+        for item in memories[:25]:
+            state = "موقوفة" if not item["enabled"] else "مفعّلة"
+            lifetime = "دائمة" if item["pinned"] else "مؤقتة"
+            lines.append(
+                f"**#{item['id']}** · {item['scope']} · {item['memory_type']} · "
+                f"أهمية {item['importance']} · {state}/{lifetime}\n"
+                f"{str(item['content'])[:220]}"
+            )
+        await interaction.response.send_message(
+            "\n".join(lines)[:1900],
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @memory.command(name="search", description="البحث في ذكريات PRIME المشتركة")
+    async def memory_search(
+        self, interaction: discord.Interaction, query: str
+    ):
+        if await self._deny_memory_manager(interaction):
+            return
+        terms = {
+            token.casefold()
+            for token in re.findall(r"[\w\u0600-\u06ff]{2,}", query)
+        }
+        if not terms:
+            return await interaction.response.send_message(
+                "اكتب كلمة أو عبارة للبحث.", ephemeral=True
+            )
+        memories = await prime_ai_service.list_memories(
+            interaction.guild.id, limit=500, include_disabled=True
+        )
+        matches = []
+        for item in memories:
+            content = str(item["content"]).casefold()
+            score = sum(content.count(term) for term in terms)
+            if score:
+                matches.append((score, item))
+        matches.sort(key=lambda entry: (entry[0], entry[1]["importance"]), reverse=True)
+        if not matches:
+            return await interaction.response.send_message(
+                "لم أجد ذاكرة مطابقة.", ephemeral=True
+            )
+        lines = [
+            f"**#{item['id']}** · {item['memory_type']} · أهمية {item['importance']}\n"
+            f"{str(item['content'])[:220]}"
+            for _score, item in matches[:8]
+        ]
+        await interaction.response.send_message(
+            "\n".join(lines)[:1900],
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @memory.command(name="edit", description="تعديل ذاكرة مشتركة مع حفظ سجل المراجعة")
+    async def memory_edit(
+        self,
+        interaction: discord.Interaction,
+        memory_id: app_commands.Range[int, 1, 2_147_483_647],
+        content: str,
+    ):
+        if await self._deny_memory_manager(interaction):
+            return
+        memories = await prime_ai_service.list_memories(
+            interaction.guild.id, limit=500, include_disabled=True
+        )
+        previous = next(
+            (item for item in memories if int(item["id"]) == int(memory_id)), None
+        )
+        if previous is None:
+            return await interaction.response.send_message(
+                "لم أجد ذاكرة مشتركة بهذا الرقم.", ephemeral=True
+            )
+        expires_in_days = 0
+        if not previous["pinned"] and previous["expires_at"]:
+            try:
+                expiry = datetime.fromisoformat(
+                    str(previous["expires_at"]).replace("Z", "+00:00")
+                )
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+                expires_in_days = max(
+                    1, min(3650, math.ceil((expiry - datetime.now(timezone.utc)).total_seconds() / 86400))
+                )
+            except (TypeError, ValueError):
+                expires_in_days = 90
+        try:
+            await prime_ai_service.edit_memory(
+                interaction.guild.id,
+                interaction.user.id,
+                int(memory_id),
+                content,
+                scope=previous["scope"],
+                scope_id=previous["scope_id"],
+                expires_in_days=expires_in_days,
+                enabled=previous["enabled"],
+                memory_type=previous["memory_type"],
+                importance=previous["importance"],
+                source_channel_id=interaction.channel_id,
+                source_message_id=interaction.id,
+                related_user_ids=previous["related_user_ids"],
+            )
+        except ValueError as error:
+            text = (
+                "لا يمكن حفظ بيانات حساسة."
+                if str(error) == "sensitive_memory_rejected"
+                else "تعذر تعديل الذاكرة."
+            )
+            return await interaction.response.send_message(text, ephemeral=True)
+        await interaction.response.send_message(
+            f"تم تعديل الذاكرة #{memory_id} وحُفظت نسختها السابقة في سجل المراجعة.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @memory.command(name="delete", description="حذف ذاكرة مشتركة")
+    async def memory_delete(
+        self,
+        interaction: discord.Interaction,
+        memory_id: app_commands.Range[int, 1, 2_147_483_647],
+    ):
+        if await self._deny_memory_manager(interaction):
+            return
+        deleted = await prime_ai_service.delete_memory(
+            interaction.guild.id, interaction.user.id, int(memory_id)
+        )
+        await interaction.response.send_message(
+            "حُذفت الذاكرة." if deleted else "لم أجد ذاكرة مشتركة بهذا الرقم.",
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @memory.command(name="history", description="عرض مصدر ومراجعات ذاكرة")
+    async def memory_history(
+        self,
+        interaction: discord.Interaction,
+        memory_id: app_commands.Range[int, 1, 2_147_483_647],
+    ):
+        if await self._deny_memory_manager(interaction):
+            return
+        memories = await prime_ai_service.list_memories(
+            interaction.guild.id, limit=500, include_disabled=True
+        )
+        item = next((row for row in memories if int(row["id"]) == int(memory_id)), None)
+        if item is None:
+            return await interaction.response.send_message(
+                "لم أجد ذاكرة مشتركة بهذا الرقم.", ephemeral=True
+            )
+        revisions = await prime_ai_service.list_memory_revisions(
+            interaction.guild.id, int(memory_id), limit=10
+        )
+        source = (
+            f"القناة: <#{item['source_channel_id']}>"
+            if item["source_channel_id"] else "القناة: غير مسجلة"
+        )
+        if item["source_message_id"]:
+            source += f" · الرسالة المصدر: `{item['source_message_id']}`"
+        lines = [f"الذاكرة #{memory_id} · {source}"]
+        for revision in revisions:
+            lines.append(
+                f"مراجعة {revision['id']} · {revision['changed_at']} · "
+                f"بواسطة <@{revision['changed_by']}>\n"
+                f"قبل: {revision['before_content'][:120]}\n"
+                f"بعد: {revision['after_content'][:120]}"
+            )
+        if not revisions:
+            lines.append("لا توجد تعديلات سابقة.")
+        await interaction.response.send_message(
+            "\n\n".join(lines)[:1900],
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     async def answer_ai(self, itx: discord.Interaction, question: str, mode: str | None = None):
         question = str(question).strip()[:prime_ai_service.MAX_CHAT_PROMPT]
@@ -1080,18 +1503,35 @@ class AITools(commands.Cog):
                 )
 
         guild_id = guild.id if guild is not None else 0
-        conversation = (
-            prime_ai_runtime.CONVERSATION_STATE.get(
-                (
-                    guild.id,
-                    getattr(itx, "channel_id", None)
-                    or getattr(getattr(itx, "channel", None), "id", None),
-                    itx.user.id,
-                )
-            )
-            if guild is not None
-            else []
+        interaction_channel_id = (
+            getattr(itx, "channel_id", None)
+            or getattr(getattr(itx, "channel", None), "id", None)
         )
+        conversation = []
+        if guild is not None and interaction_channel_id is not None:
+            retention_days = int(
+                config.get("retention", {}).get("conversation_days", 7)
+            )
+            history_limit = max(
+                0,
+                min(int(config.get("context", {}).get("max_messages", 12)), 30),
+            )
+            history_limit -= history_limit % 2
+            if retention_days > 0 and history_limit:
+                conversation_topic = await prime_ai_persistence.resolve_topic_key(
+                    guild.id,
+                    interaction_channel_id,
+                    itx.user.id,
+                    prime_ai_intelligence._extract_topic(question),
+                    allow_inherit=prime_ai_persistence.is_follow_up(question),
+                )
+                conversation = await prime_ai_persistence.load_turns(
+                    guild.id,
+                    interaction_channel_id,
+                    itx.user.id,
+                    conversation_topic,
+                    limit=history_limit // 2,
+                )
         wait = prime_ai_service.allow_request(
             guild_id,
             itx.user.id,
@@ -1132,8 +1572,9 @@ class AITools(commands.Cog):
                     source="ask_ai",
                     conversation=conversation,
                 )
-                self._record_message_turn(
-                    guild, itx.user, itx.channel, question, response_text, config
+                await self._record_message_turn(
+                    guild, itx.user, itx.channel, question, response_text, config,
+                    turn_key=str(itx.id), user_message_id=int(itx.id),
                 )
                 return await itx.followup.send(
                     response_text,
@@ -1171,8 +1612,9 @@ class AITools(commands.Cog):
                     source="ask_ai",
                     conversation=conversation,
                 )
-                self._record_message_turn(
-                    guild, itx.user, itx.channel, question, response_text, config
+                await self._record_message_turn(
+                    guild, itx.user, itx.channel, question, response_text, config,
+                    turn_key=str(itx.id), user_message_id=int(itx.id),
                 )
                 return await itx.followup.send(
                     response_text,
@@ -1209,6 +1651,11 @@ class AITools(commands.Cog):
                 context=context,
                 mode=selected_mode,
                 audit_action="محادثة PRIME AI",
+                turn_key=f"interaction:{itx.id}",
+                user_message_id=int(itx.id),
+                reference_message_id=getattr(
+                    getattr(itx, "message", None), "id", None
+                ),
             )
             embed = discord.Embed(
                 title="المساعد الذكي",
@@ -1216,10 +1663,13 @@ class AITools(commands.Cog):
                 color=0x2ECC71,
             )
             embed.set_footer(text="PRIME AI · Google Gemini")
-            await itx.followup.send(
+            response_message = await itx.followup.send(
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions.none(),
                 ephemeral=selected_mode == "ASSISTANT",
+            )
+            await prime_ai_persistence.set_assistant_message_id(
+                f"interaction:{itx.id}", int(response_message.id)
             )
         except prime_ai_service.AIProviderUnavailable as error:
             LOGGER.warning(
@@ -2153,6 +2603,8 @@ class AITools(commands.Cog):
             or getattr(message, "webhook_id", None) is not None
         ):
             return
+        turn_message_id = getattr(message, "id", None)
+        turn_key = str(turn_message_id or "")
         try:
             settings = await prime_ai_service.get_settings(message.guild.id)
             snapshot = await prime_ai_control.get_control_settings(message.guild.id)
@@ -2195,10 +2647,12 @@ class AITools(commands.Cog):
         )
         wake_triggered = bool(access.get("wake_word", True) and wake_called)
         replied_to_bot = False
-        referenced = getattr(getattr(message, "reference", None), "resolved", None)
-        if referenced is None and getattr(message, "reference", None):
+        message_reference = getattr(message, "reference", None)
+        reference_message_id = getattr(message_reference, "message_id", None)
+        referenced = getattr(message_reference, "resolved", None)
+        if referenced is None and reference_message_id is not None:
             try:
-                referenced = await message.channel.fetch_message(message.reference.message_id)
+                referenced = await message.channel.fetch_message(reference_message_id)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 referenced = None
         if (
@@ -2208,9 +2662,17 @@ class AITools(commands.Cog):
             and int(referenced.author.id) == bot_id
         ):
             replied_to_bot = True
+        conversation_reference_id = (
+            int(reference_message_id)
+            if replied_to_bot and reference_message_id
+            else None
+        )
         # PRIME only responds when addressed. Ignore any stale automatic flag at
         # runtime as a second guard, even though settings normalization disables it.
-        is_triggered = is_mention or replied_to_bot or wake_triggered
+        is_talk_auto = prime_ai_runtime.talk_channel_auto_reply(
+            config, message.channel.id
+        )
+        is_triggered = is_mention or replied_to_bot or wake_triggered or is_talk_auto
         pending_action = await prime_ai_control.get_pending_action_context(
             message.guild.id, message.channel.id, message.author.id
         )
@@ -2228,6 +2690,8 @@ class AITools(commands.Cog):
         prompt = (
             wake_prompt if wake_triggered else content_without_mention
         ).strip()
+        if is_talk_auto and not prompt:
+            return
         if (
             not prompt
             and replied_to_bot
@@ -2276,28 +2740,57 @@ class AITools(commands.Cog):
                 options[0],
             )
             if config.get("response", {}).get("reply_behavior", True):
-                await message.reply(
+                sent_presence = await message.reply(
                     presence,
                     mention_author=False,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             else:
-                await message.channel.send(
+                sent_presence = await message.channel.send(
                     presence, allowed_mentions=discord.AllowedMentions.none()
                 )
-            self._record_message_turn(
+            await self._record_message_turn(
                 message.guild,
                 message.author,
                 message.channel,
                 message.content,
                 presence,
                 config,
+                turn_key=turn_key,
+                user_message_id=turn_message_id,
+                assistant_message_id=getattr(sent_presence, "id", None),
+                reference_message_id=getattr(
+                    getattr(message, "reference", None), "message_id", None
+                ),
+                mentioned_user_ids=[int(item.id) for item in message.mentions],
             )
             return
         turn_prompt = prompt
-        conversation = prime_ai_runtime.CONVERSATION_STATE.get(
-            (message.guild.id, message.channel.id, message.author.id)
+        history_limit = max(
+            0, min(int(config.get("context", {}).get("max_messages", 12)), 30)
         )
+        history_limit -= history_limit % 2
+        retention_days = int(
+            config.get("retention", {}).get("conversation_days", 7)
+        )
+        conversation = []
+        if history_limit and retention_days > 0:
+            conversation_topic = await prime_ai_persistence.resolve_topic_key(
+                message.guild.id,
+                message.channel.id,
+                message.author.id,
+                prime_ai_intelligence._extract_topic(prompt),
+                conversation_reference_id,
+                allow_inherit=prime_ai_persistence.is_follow_up(prompt),
+            )
+            conversation = await prime_ai_persistence.load_turns(
+                message.guild.id,
+                message.channel.id,
+                message.author.id,
+                conversation_topic,
+                reference_message_id=conversation_reference_id,
+                limit=history_limit // 2,
+            )
         current_request = prime_ai_runtime.detect_skill_request(prompt)
         current_is_action = bool(
             current_request and current_request.get("intent") == "SERVER_ACTION"
@@ -2346,13 +2839,19 @@ class AITools(commands.Cog):
                         mention_author=False,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
-                    self._record_message_turn(
+                    await self._record_message_turn(
                         message.guild,
                         message.author,
                         message.channel,
                         turn_prompt,
                         clarification,
                         config,
+                        turn_key=turn_key,
+                        user_message_id=turn_message_id,
+                        reference_message_id=getattr(
+                            getattr(message, "reference", None), "message_id", None
+                        ),
+                        mentioned_user_ids=[int(item.id) for item in message.mentions],
                     )
                     return
 
@@ -2377,13 +2876,19 @@ class AITools(commands.Cog):
                     await message.channel.send(
                         notice, allowed_mentions=discord.AllowedMentions.none()
                     )
-                self._record_message_turn(
+                await self._record_message_turn(
                     message.guild,
                     message.author,
                     message.channel,
                     turn_prompt,
                     notice,
                     config,
+                    turn_key=turn_key,
+                    user_message_id=turn_message_id,
+                    reference_message_id=getattr(
+                        getattr(message, "reference", None), "message_id", None
+                    ),
+                    mentioned_user_ids=[int(item.id) for item in message.mentions],
                 )
                 return
             if current_is_action:
@@ -2419,13 +2924,19 @@ class AITools(commands.Cog):
                         action_response,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
-                self._record_message_turn(
+                await self._record_message_turn(
                     message.guild,
                     message.author,
                     message.channel,
                     turn_prompt,
                     action_response,
                     config,
+                    turn_key=turn_key,
+                    user_message_id=turn_message_id,
+                    reference_message_id=getattr(
+                        getattr(message, "reference", None), "message_id", None
+                    ),
+                    mentioned_user_ids=[int(item.id) for item in message.mentions],
                 )
             except discord.HTTPException:
                 LOGGER.exception("[AI] Could not deliver natural action status.")
@@ -2441,23 +2952,44 @@ class AITools(commands.Cog):
                         mention_author=False,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
-                    self._record_message_turn(
+                    await self._record_message_turn(
                         message.guild,
                         message.author,
                         message.channel,
                         turn_prompt,
                         fallback,
                         config,
+                        turn_key=turn_key,
+                        user_message_id=turn_message_id,
+                        reference_message_id=getattr(
+                            getattr(message, "reference", None), "message_id", None
+                        ),
+                        mentioned_user_ids=[int(item.id) for item in message.mentions],
                     )
                 except discord.HTTPException:
                     LOGGER.exception("[AI] Could not deliver natural action failure.")
             return
+        referenced_author = getattr(referenced, "author", None)
+        safe_reply_context = (
+            referenced
+            if referenced is not None
+            and (
+                int(getattr(referenced_author, "id", 0) or 0)
+                == int(message.author.id)
+                or (
+                    bool(getattr(referenced_author, "bot", False))
+                    and int(getattr(referenced_author, "id", 0) or 0) == bot_id
+                )
+            )
+            else None
+        )
         context, _channel_history = await prime_ai_runtime.build_context(
             message,
             config,
-            replied_message=referenced,
-            include_channel_history=True,
+            replied_message=safe_reply_context,
+            include_channel_history=False,
         )
+        context["talk_channel_auto_reply"] = is_talk_auto
         context["intent"] = prime_ai_runtime.classify_intent(prompt)
         skill_request = prime_ai_runtime.detect_skill_request(prompt)
         if skill_request:
@@ -2497,6 +3029,17 @@ class AITools(commands.Cog):
                         context=context,
                         mode=mode,
                         audit_action="تفاعل PRIME AI",
+                        turn_key=turn_key,
+                        user_message_id=turn_message_id,
+                        reference_message_id=getattr(
+                            getattr(message, "reference", None), "message_id", None
+                        ),
+                        mentioned_user_ids=[int(item.id) for item in message.mentions],
+                        thread_id=(
+                            message.channel.id
+                            if isinstance(message.channel, discord.Thread)
+                            else None
+                        ),
                     )
             else:
                 answer = await self._generate_user_response(
@@ -2508,6 +3051,17 @@ class AITools(commands.Cog):
                     context=context,
                     mode=mode,
                     audit_action="تفاعل PRIME AI",
+                    turn_key=turn_key,
+                    user_message_id=turn_message_id,
+                    reference_message_id=getattr(
+                        getattr(message, "reference", None), "message_id", None
+                    ),
+                    mentioned_user_ids=[int(item.id) for item in message.mentions],
+                    thread_id=(
+                        message.channel.id
+                        if isinstance(message.channel, discord.Thread)
+                        else None
+                    ),
                 )
             allowed_mentions = discord.AllowedMentions.none()
             if not response_config.get("markdown", True):
@@ -2550,6 +3104,10 @@ class AITools(commands.Cog):
             auto_delete = int(response_config.get("auto_delete_seconds", 0))
             if auto_delete:
                 asyncio.create_task(self._delete_later(sent, auto_delete))
+            if sent:
+                await prime_ai_persistence.set_assistant_message_id(
+                    str(message.id), int(sent[0].id)
+                )
         except prime_ai_service.AIProviderUnavailable as error:
             LOGGER.warning(
                 "[AI] Mention/reply provider request failed (%s).",

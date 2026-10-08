@@ -13,6 +13,7 @@ import database
 import prime_ai_control
 import prime_ai_runtime
 import prime_ai_intelligence
+import prime_ai_persistence
 import prime_ai_service as ai
 import web_server as ws
 from cogs.ai_tools import (
@@ -1479,6 +1480,24 @@ class PrimeAIUnderstandingTests(unittest.IsolatedAsyncioTestCase):
                 11,
             )
         )
+        self.assertTrue(
+            prime_ai_runtime.talk_channel_auto_reply(
+                {"talk_channel": {"enabled": True, "channel_id": "10"}},
+                10,
+            )
+        )
+        self.assertFalse(
+            prime_ai_runtime.talk_channel_auto_reply(
+                {"talk_channel": {"enabled": True, "channel_id": "10"}},
+                11,
+            )
+        )
+        self.assertFalse(
+            prime_ai_runtime.talk_channel_auto_reply(
+                {"talk_channel": {"enabled": False, "channel_id": "10"}},
+                10,
+            )
+        )
 
     def test_private_memory_management_parser_requires_explicit_owner_language(self):
         self.assertEqual(
@@ -2297,7 +2316,7 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(legacy["context"]["max_messages"], 4)
 
-    def test_retired_retention_settings_only_drop_from_legacy_reads(self):
+    def test_conversation_retention_is_active_and_legacy_context_days_are_ignored(self):
         incoming = deepcopy(prime_ai_control.DEFAULT_CONTROL_SETTINGS)
         incoming["retention"]["context_days"] = 14
         incoming["retention"]["conversation_days"] = 30
@@ -2305,10 +2324,8 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
         legacy = prime_ai_control.normalize_control_settings(
             incoming, allow_legacy_values=True
         )
-        self.assertEqual(
-            legacy["retention"],
-            prime_ai_control.DEFAULT_CONTROL_SETTINGS["retention"],
-        )
+        self.assertEqual(legacy["retention"]["conversation_days"], 30)
+        self.assertNotIn("context_days", legacy["retention"])
         with self.assertRaisesRegex(ValueError, "unknown_retention_field"):
             prime_ai_control.normalize_control_settings(incoming)
 
@@ -2716,7 +2733,6 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(removed["memory_days"], 1)
         self.assertEqual([item["id"] for item in memories], [pinned["id"]])
         self.assertTrue(memories[0]["pinned"])
-
         async with database.connect() as db:
             await db.execute(
                 "INSERT INTO prime_ai_memories "
@@ -2734,6 +2750,172 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
         global_cleanup = await prime_ai_control.prune_expired_data(0, settings)
         self.assertEqual(global_cleanup["expired_memories"], 1)
+
+    async def test_persisted_conversation_is_scoped_and_expires(self):
+        await prime_ai_persistence.record_turn(
+            turn_key="test:conversation:1",
+            guild_id=100000000000000081,
+            channel_id=100000000000000082,
+            user_id=100000000000000083,
+            topic_key="design",
+            user_content="Let's adjust the button spacing.",
+            assistant_content="Use a little more horizontal space.",
+            retention_days=7,
+            assistant_message_id=100000000000000084,
+        )
+        context = await prime_ai_persistence.load_turns(
+            100000000000000081,
+            100000000000000082,
+            100000000000000083,
+            "design",
+        )
+        self.assertEqual(len(context), 2)
+        self.assertEqual(context[0]["role"], "user")
+        self.assertEqual(
+            await prime_ai_persistence.resolve_topic_key(
+                100000000000000081,
+                100000000000000082,
+                100000000000000083,
+                "",
+                100000000000000084,
+            ),
+            "design",
+        )
+        self.assertEqual(
+            await prime_ai_persistence.load_turns(
+                100000000000000081,
+                100000000000000082,
+                100000000000000099,
+                "design",
+            ),
+            [],
+        )
+
+    async def test_shared_memory_rejects_duplicates_and_opposite_policy(self):
+        guild_id = 100000000000000091
+        actor_id = 100000000000000092
+        first = await prime_ai_control.save_memory(
+            guild_id,
+            actor_id,
+            "Moderators can enable slowmode during tournaments.",
+            scope="SERVER",
+            expires_in_days=0,
+            memory_type="RULE",
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate_memory"):
+            await prime_ai_control.save_memory(
+                guild_id,
+                actor_id,
+                "Moderators can enable slowmode during tournaments.",
+                scope="SERVER",
+                expires_in_days=0,
+                memory_type="RULE",
+            )
+        with self.assertRaisesRegex(ValueError, "memory_conflict_requires_edit"):
+            await prime_ai_control.save_memory(
+                guild_id,
+                actor_id,
+                "Moderators are not allowed to enable slowmode during tournaments.",
+                scope="SERVER",
+                expires_in_days=0,
+                memory_type="RULE",
+            )
+        self.assertGreater(first["id"], 0)
+
+    async def test_related_server_memory_is_only_loaded_for_linked_member(self):
+        guild_id = 100000000000000101
+        linked_user = 100000000000000102
+        other_user = 100000000000000103
+        note = "Rana prefers concise event announcements."
+        await ai.add_memory(
+            guild_id,
+            100000000000000104,
+            note,
+            expires_in_days=0,
+            related_user_ids=[linked_user],
+        )
+        linked_context = await ai.list_context_memories(
+            guild_id,
+            channel_id=100000000000000105,
+            role_ids=[],
+            user_id=linked_user,
+        )
+        other_context = await ai.list_context_memories(
+            guild_id,
+            channel_id=100000000000000105,
+            role_ids=[],
+            user_id=other_user,
+        )
+        self.assertIn(note, [item["content"] for item in linked_context])
+        self.assertNotIn(note, [item["content"] for item in other_context])
+
+    async def test_shared_memory_edit_keeps_provenance_and_deletion_clears_history(self):
+        guild_id = 100000000000000111
+        actor_id = 100000000000000112
+        channel_id = 100000000000000113
+        user_id = 100000000000000114
+        memory = await ai.add_memory(
+            guild_id,
+            actor_id,
+            "Tournament notices use the announcements channel.",
+            scope="CHANNEL",
+            scope_id=str(channel_id),
+            expires_in_days=0,
+            memory_type="RULE",
+            importance=4,
+            source_channel_id=channel_id,
+            source_message_id=100000000000000115,
+            related_user_ids=[user_id],
+        )
+        await ai.edit_memory(
+            guild_id,
+            actor_id,
+            memory["id"],
+            "Tournament notices use the selected announcements channel.",
+            scope="CHANNEL",
+            scope_id=str(channel_id),
+            expires_in_days=0,
+            memory_type="RULE",
+            importance=4,
+            source_channel_id=channel_id,
+            source_message_id=100000000000000116,
+            related_user_ids=[user_id],
+        )
+        updated = await ai.list_memories(guild_id, include_disabled=True)
+        self.assertEqual(updated[0]["source_channel_id"], str(channel_id))
+        self.assertEqual(updated[0]["related_user_ids"], [user_id])
+        revisions = await ai.list_memory_revisions(guild_id, memory["id"])
+        self.assertEqual(len(revisions), 1)
+        self.assertIn("use the announcements channel", revisions[0]["before_content"])
+        self.assertTrue(await ai.delete_memory(guild_id, actor_id, memory["id"]))
+        self.assertEqual(
+            await ai.list_memory_revisions(guild_id, memory["id"]),
+            [],
+        )
+        self.assertEqual(
+            await prime_ai_persistence.load_turns(
+                100000000000000081,
+                100000000000000098,
+                100000000000000083,
+                "design",
+            ),
+            [],
+        )
+        async with database.connect() as db:
+            await db.execute(
+                "UPDATE prime_ai_conversation_turns SET expires_at=? WHERE turn_key=?",
+                ("2000-01-01T00:00:00+00:00", "test:conversation:1"),
+            )
+            await db.commit()
+        self.assertEqual(
+            await prime_ai_persistence.load_turns(
+                100000000000000081,
+                100000000000000082,
+                100000000000000083,
+                "design",
+            ),
+            [],
+        )
 
     async def test_memory_controls_gate_creation_and_prune_expired_candidates(self):
         guild_id = 100000000000000051

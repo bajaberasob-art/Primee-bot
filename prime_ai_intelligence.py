@@ -61,9 +61,8 @@ async def ensure_schema() -> None:
         if identity is not None and _SCHEMA_READY_DB == identity:
             return
         async with database.connect() as db:
-            # Durable state is limited to low-risk user profile metadata.
-            # Conversation text remains transient in memory to preserve the
-            # project's no-chat-text-persistence privacy contract.
+            # Durable profile state is low-risk; selected conversation text is
+            # stored separately with explicit retention and scope boundaries.
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS prime_ai_user_profiles (
@@ -218,6 +217,20 @@ async def update_user_profile(
         except Exception:
             await db.rollback()
             raise
+
+    try:
+        import prime_ai_persistence
+
+        await prime_ai_persistence.sync_profile_record(guild_id, user_id)
+    except Exception:
+        # The SQLite profile remains the local source of truth; failure to
+        # update its durable mirror must not turn a successful chat into a
+        # user-visible error.
+        import logging
+
+        logging.getLogger("PRIME.AI.Intelligence").exception(
+            "Could not sync PRIME AI profile to durable storage."
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,

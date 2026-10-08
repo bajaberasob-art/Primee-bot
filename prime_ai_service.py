@@ -405,6 +405,14 @@ async def list_audit(guild_id: int, limit: int = 40) -> list[dict]:
     ]
 
 
+def _safe_json_list(value):
+    try:
+        decoded = json.loads(str(value or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return decoded if isinstance(decoded, list) else []
+
+
 async def list_memories(
     guild_id: int,
     limit: int = MAX_MEMORIES_PER_GUILD,
@@ -431,7 +439,8 @@ async def list_memories(
     async with database.connect(aiosqlite.Row) as db:
         async with db.execute(
             "SELECT memory_id, content, created_by, created_at, scope, scope_id, "
-            "enabled, expires_at, updated_at, source, confidence, status, owner_user_id, pinned "
+            "enabled, expires_at, updated_at, source, confidence, status, owner_user_id, pinned, "
+            "memory_type, importance, source_channel_id, source_message_id, related_user_ids_json "
             "FROM prime_ai_memories WHERE "
             + " AND ".join(clauses)
             + " ORDER BY memory_id DESC LIMIT ?",
@@ -454,6 +463,17 @@ async def list_memories(
             "confidence": float(row["confidence"]),
             "status": row["status"],
             "owner_user_id": str(row["owner_user_id"]) if row["owner_user_id"] is not None else None,
+            "memory_type": str(row["memory_type"] or "FACT"),
+            "importance": int(row["importance"] or 3),
+            "source_channel_id": (
+                str(row["source_channel_id"])
+                if row["source_channel_id"] is not None else None
+            ),
+            "source_message_id": (
+                str(row["source_message_id"])
+                if row["source_message_id"] is not None else None
+            ),
+            "related_user_ids": _safe_json_list(row["related_user_ids_json"]),
         }
         for row in rows
     ]
@@ -503,7 +523,8 @@ async def list_context_memories(
     async with database.connect(aiosqlite.Row) as db:
         async with db.execute(
             "SELECT memory_id, content, created_by, created_at, scope, scope_id, "
-            "enabled, expires_at, updated_at, source, confidence, status, owner_user_id "
+            "enabled, expires_at, updated_at, source, confidence, status, owner_user_id, "
+            "memory_type, importance, related_user_ids_json "
             "FROM prime_ai_memories "
             f"WHERE ({scope_clause}) "
             "AND enabled = 1 AND status = 'ACTIVE' "
@@ -528,8 +549,18 @@ async def list_context_memories(
             "confidence": float(row["confidence"]),
             "status": row["status"],
             "owner_user_id": str(row["owner_user_id"]) if row["owner_user_id"] is not None else None,
+            "memory_type": str(row["memory_type"] or "FACT"),
+            "importance": int(row["importance"] or 3),
+            "related_user_ids": _safe_json_list(row["related_user_ids_json"]),
         }
         for row in rows
+    ]
+    current_user_id = str(user_id) if user_id is not None else ""
+    memories = [
+        memory
+        for memory in memories
+        if not memory["related_user_ids"]
+        or current_user_id in {str(value) for value in memory["related_user_ids"]}
     ]
     query_terms = {
         token.casefold()
@@ -600,21 +631,49 @@ async def edit_user_memory(
     user_id: int,
     memory_id: int,
     content: str,
+    *,
+    source_channel_id: int | None = None,
+    source_message_id: int | None = None,
 ) -> bool:
     value = prime_ai_control.validate_memory_content(
         content, MAX_MEMORY_LENGTH
     )
-    async with database.connect() as db:
+    async with database.connect(aiosqlite.Row) as db:
         try:
             await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT content FROM prime_ai_memories WHERE guild_id=? AND memory_id=? "
+                "AND scope='USER' AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=? "
+                "AND status='ACTIVE'",
+                (int(guild_id), int(memory_id), int(user_id)),
+            ) as cursor:
+                previous = await cursor.fetchone()
+            if previous is None:
+                await db.rollback()
+                return False
+            if str(previous["content"]) != value:
+                await db.execute(
+                    "INSERT INTO prime_ai_memory_revisions "
+                    "(guild_id,memory_id,before_content,after_content,changed_by,"
+                    "changed_at,source_channel_id,source_message_id) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        int(guild_id), int(memory_id), previous["content"], value,
+                        int(user_id), prime_ai_control.timestamp(), source_channel_id,
+                        source_message_id,
+                    ),
+                )
             cursor = await db.execute(
-                "UPDATE prime_ai_memories SET content=?, updated_at=? "
+                "UPDATE prime_ai_memories SET content=?, updated_at=?, "
+                "source_channel_id=COALESCE(?,source_channel_id), "
+                "source_message_id=COALESCE(?,source_message_id) "
                 "WHERE guild_id=? AND memory_id=? AND scope='USER' "
                 "AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=? "
                 "AND status='ACTIVE'",
                 (
                     value,
                     prime_ai_control.timestamp(),
+                    source_channel_id,
+                    source_message_id,
                     int(guild_id),
                     int(memory_id),
                     int(user_id),
@@ -624,6 +683,10 @@ async def edit_user_memory(
         except Exception:
             await db.rollback()
             raise
+    if cursor.rowcount:
+        import prime_ai_persistence
+
+        await prime_ai_persistence.sync_memory_snapshot(int(guild_id))
     if cursor.rowcount:
         await record_audit(
             guild_id,
@@ -649,10 +712,19 @@ async def delete_user_memory(
                 "AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=?",
                 (int(guild_id), int(memory_id), int(user_id)),
             )
+            if cursor.rowcount:
+                await db.execute(
+                    "DELETE FROM prime_ai_memory_revisions WHERE guild_id=? AND memory_id=?",
+                    (int(guild_id), int(memory_id)),
+                )
             await db.commit()
         except Exception:
             await db.rollback()
             raise
+    if cursor.rowcount:
+        import prime_ai_persistence
+
+        await prime_ai_persistence.sync_memory_snapshot(int(guild_id))
     if cursor.rowcount:
         await record_audit(
             guild_id,
@@ -665,13 +737,20 @@ async def delete_user_memory(
 
 
 async def forget_user_data(guild_id: int, user_id: int) -> dict:
-    """Delete the caller's private memories and durable profile metadata."""
+    """Delete the caller's private memories, profile, and saved conversation turns."""
     import prime_ai_intelligence
+    import prime_ai_persistence
 
     await prime_ai_intelligence.ensure_schema()
     async with database.connect() as db:
         try:
             await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                "DELETE FROM prime_ai_memory_revisions WHERE guild_id=? AND memory_id IN "
+                "(SELECT memory_id FROM prime_ai_memories WHERE guild_id=? AND scope='USER' "
+                "AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=?)",
+                (int(guild_id), int(guild_id), int(user_id)),
+            )
             memories = await db.execute(
                 "DELETE FROM prime_ai_memories WHERE guild_id=? AND scope='USER' "
                 "AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=?",
@@ -693,9 +772,15 @@ async def forget_user_data(guild_id: int, user_id: int) -> dict:
         except Exception:
             await db.rollback()
             raise
+    await prime_ai_persistence.sync_memory_snapshot(int(guild_id))
+    await prime_ai_persistence.sync_profile_record(int(guild_id), int(user_id))
+    conversations = await prime_ai_persistence.forget_conversation_user(
+        int(guild_id), int(user_id)
+    )
     return {
         "memories": max(0, int(memories.rowcount)),
         "profile": max(0, int(profile.rowcount)),
+        "conversations": conversations,
     }
 
 
@@ -810,6 +895,11 @@ async def add_memory(
     scope: str = "SERVER",
     scope_id: str = "",
     expires_in_days: int | None = None,
+    memory_type: str = "FACT",
+    importance: int = 3,
+    source_channel_id: int | None = None,
+    source_message_id: int | None = None,
+    related_user_ids: list[int] | None = None,
 ) -> dict:
     control = await prime_ai_control.get_control_settings(guild_id)
     memory_config = control["config"]["memory"]
@@ -833,6 +923,11 @@ async def add_memory(
             scope=scope,
             scope_id=scope_id,
             expires_in_days=expires_in_days,
+            memory_type=memory_type,
+            importance=importance,
+            source_channel_id=source_channel_id,
+            source_message_id=source_message_id,
+            related_user_ids=related_user_ids,
             maximum_count=int(memory_config.get("maximum_count", MAX_STORED_MEMORIES_PER_GUILD)),
             maximum_content_length=int(
                 memory_config.get("maximum_content_length", MAX_MEMORY_LENGTH)
@@ -863,6 +958,11 @@ async def edit_memory(
     expires_in_days: int | None = None,
     enabled: bool = True,
     source_guild_id: int | None = None,
+    memory_type: str | None = None,
+    importance: int | None = None,
+    source_channel_id: int | None = None,
+    source_message_id: int | None = None,
+    related_user_ids: list[int] | None = None,
 ) -> dict:
     control = await prime_ai_control.get_control_settings(guild_id)
     memory_config = control["config"]["memory"]
@@ -876,6 +976,11 @@ async def edit_memory(
         memory_id=memory_id,
         enabled=enabled,
         source_guild_id=source_guild_id,
+        memory_type=memory_type,
+        importance=importance,
+        source_channel_id=source_channel_id,
+        source_message_id=source_message_id,
+        related_user_ids=related_user_ids,
         maximum_count=int(memory_config.get("maximum_count", MAX_STORED_MEMORIES_PER_GUILD)),
         maximum_content_length=int(
             memory_config.get("maximum_content_length", MAX_MEMORY_LENGTH)
@@ -1055,8 +1160,15 @@ async def clear_memories(guild_id: int, actor_id: int) -> int:
             "DELETE FROM prime_ai_memories WHERE guild_id = ? AND scope != 'USER'",
             (int(guild_id),),
         )
+        await db.execute(
+            "DELETE FROM prime_ai_memory_revisions WHERE guild_id=?",
+            (int(guild_id),),
+        )
         await db.commit()
     deleted = max(0, int(cursor.rowcount))
+    import prime_ai_persistence
+
+    await prime_ai_persistence.sync_memory_snapshot(int(guild_id))
     await record_audit(
         guild_id,
         actor_id,
@@ -1078,6 +1190,10 @@ async def delete_memory(guild_id: int, actor_id: int, memory_id: int) -> bool:
                 (gid, mid),
             )
             if cursor.rowcount:
+                await db.execute(
+                    "DELETE FROM prime_ai_memory_revisions WHERE guild_id=? AND memory_id=?",
+                    (gid, mid),
+                )
                 await _insert_audit(
                     db,
                     gid,
@@ -1090,7 +1206,42 @@ async def delete_memory(guild_id: int, actor_id: int, memory_id: int) -> bool:
         except Exception:
             await db.rollback()
             raise
+    if cursor.rowcount:
+        import prime_ai_persistence
+
+        await prime_ai_persistence.sync_memory_snapshot(gid)
     return bool(cursor.rowcount)
+
+
+async def list_memory_revisions(
+    guild_id: int, memory_id: int, limit: int = 20
+) -> list[dict]:
+    async with database.connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT revision_id,before_content,after_content,changed_by,changed_at,"
+            "source_channel_id,source_message_id FROM prime_ai_memory_revisions "
+            "WHERE guild_id=? AND memory_id=? ORDER BY revision_id DESC LIMIT ?",
+            (int(guild_id), int(memory_id), max(1, min(int(limit), 50))),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [
+        {
+            "id": int(row["revision_id"]),
+            "before_content": row["before_content"],
+            "after_content": row["after_content"],
+            "changed_by": str(row["changed_by"]),
+            "changed_at": row["changed_at"],
+            "source_channel_id": (
+                str(row["source_channel_id"])
+                if row["source_channel_id"] is not None else None
+            ),
+            "source_message_id": (
+                str(row["source_message_id"])
+                if row["source_message_id"] is not None else None
+            ),
+        }
+        for row in rows
+    ]
 
 
 def allow_request(
@@ -1350,6 +1501,12 @@ def _build_system_prompt(
     prompt_header = f"تعليمات PRIME AI:\n{instructions}\n\n"
     if mode_guidance:
         prompt_header += f"وضع التشغيل:\n{mode_guidance}\n\n"
+    if (context or {}).get("talk_channel_auto_reply"):
+        prompt_header += (
+            "قناة Talk المحددة: بادر بالرد على كل رسالة نصية مسموحة في هذه القناة "
+            "فقط. اجعل الرد طبيعياً ومباشراً وقصيراً (جملة إلى ثلاث جمل عادةً)، "
+            "ولا تطلب من العضو منشن PRIME. لا تستخدم أو تكشف سياق عضو آخر.\n\n"
+        )
     return (
         prompt_header
         + "إعدادات الشخصية:\n"

@@ -780,7 +780,12 @@ async def init_db() -> None:
                     owner_user_id INTEGER,
                     candidate_expires_at TEXT,
                     confirmation_message_id INTEGER,
-                    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))
+                    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+                    memory_type TEXT NOT NULL DEFAULT 'FACT',
+                    importance INTEGER NOT NULL DEFAULT 3 CHECK (importance BETWEEN 1 AND 5),
+                    source_channel_id INTEGER,
+                    source_message_id INTEGER,
+                    related_user_ids_json TEXT NOT NULL DEFAULT '[]'
                 );
             """)
             # Additive compatibility for workspaces that already have the
@@ -802,6 +807,11 @@ async def init_db() -> None:
                 ("candidate_expires_at", "TEXT"),
                 ("confirmation_message_id", "INTEGER"),
                 ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+                ("memory_type", "TEXT NOT NULL DEFAULT 'FACT'"),
+                ("importance", "INTEGER NOT NULL DEFAULT 3"),
+                ("source_channel_id", "INTEGER"),
+                ("source_message_id", "INTEGER"),
+                ("related_user_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
             ):
                 if column not in memory_columns:
                     await db.execute(
@@ -818,6 +828,49 @@ async def init_db() -> None:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_prime_ai_memories_owner_status "
                 "ON prime_ai_memories(guild_id, scope, owner_user_id, status, memory_id DESC);"
+            )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_memory_revisions (
+                    revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    memory_id INTEGER NOT NULL,
+                    before_content TEXT NOT NULL,
+                    after_content TEXT NOT NULL,
+                    changed_by INTEGER NOT NULL,
+                    changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    source_channel_id INTEGER,
+                    source_message_id INTEGER
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_memory_revisions_lookup "
+                "ON prime_ai_memory_revisions(guild_id, memory_id, revision_id DESC);"
+            )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_conversation_turns (
+                    turn_key TEXT PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    thread_id INTEGER,
+                    user_id INTEGER NOT NULL,
+                    topic_key TEXT NOT NULL DEFAULT 'general',
+                    user_message_id INTEGER,
+                    assistant_message_id INTEGER,
+                    reference_message_id INTEGER,
+                    mentioned_user_ids_json TEXT NOT NULL DEFAULT '[]',
+                    user_content TEXT NOT NULL,
+                    assistant_content TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_conversation_lookup "
+                "ON prime_ai_conversation_turns(guild_id, channel_id, user_id, topic_key, created_at DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_conversation_expiry "
+                "ON prime_ai_conversation_turns(expires_at);"
             )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS prime_ai_audit (

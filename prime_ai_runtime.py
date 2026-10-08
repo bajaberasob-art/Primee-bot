@@ -897,6 +897,14 @@ def talk_channel_allows(config: dict, channel_id: Any) -> bool:
     ) == str(channel_id)
 
 
+def talk_channel_auto_reply(config: dict, channel_id: Any) -> bool:
+    talk_channel = (config or {}).get("talk_channel", {})
+    return bool(
+        talk_channel.get("enabled")
+        and str(talk_channel.get("channel_id", "")) == str(channel_id)
+    )
+
+
 def _reply_context(referenced: Any, *, current_user_id: str, bot_user_id: str) -> dict | None:
     if referenced is None:
         return None

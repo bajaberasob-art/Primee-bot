@@ -9,8 +9,8 @@ PRIME AI action fixes may improve request interpretation and target resolution, 
 
 **How to apply:** Keep execution-time permission checks, channel/role allowlists, role hierarchy, action enablement, and dry-run/confirmation policy intact when changing natural-language routing or adding actions.
 
-Raw Discord conversation text and rolling chat history must remain transient in memory; persist only separately approved, privacy-safe preferences or summaries.
+As of 2026-10-08, the owner approved durable retention of selected PRIME-directed conversation turns so PRIME can restore context after restarts. Retention defaults to 7 days; 0 disables and purges it. Never persist all server or channel history. Keep retained turns isolated by server, channel, member, and topic; automatic unsolicited replies are limited to the configured Talk channel.
 
-**Why:** The project owner explicitly chose temporary conversation context to avoid retaining raw chats.
+**Why:** The owner approved limited, configurable conversation persistence while explicitly rejecting broad server-history collection.
 
-**How to apply:** Do not add raw prompts, replies, or channel history to durable storage, audit details, or analytics. Clear the caller's transient context when they request deletion.
+**How to apply:** Record only selected exchanges with PRIME, apply the configured retention and Talk-channel gate, preserve Discord/PRIME permissions, and clear the member's stored conversations and transient context when they request deletion.

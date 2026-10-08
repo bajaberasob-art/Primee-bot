@@ -8,3 +8,4 @@ pytest
 Pillow
 arabic-reshaper
 python-bidi
+asyncpg

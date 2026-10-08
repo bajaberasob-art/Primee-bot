@@ -349,6 +349,7 @@ DEFAULT_CONTROL_SETTINGS: dict[str, Any] = {
         "moderation": _default_rate(30, 60),
     },
     "retention": {
+        "conversation_days": 7,
         "memory_days": 90,
         "audit_days": 90,
         "moderation_days": 30,
@@ -566,7 +567,6 @@ def normalize_control_settings(
         if isinstance(legacy_retention, dict):
             legacy_retention = dict(legacy_retention)
             legacy_retention.pop("context_days", None)
-            legacy_retention.pop("conversation_days", None)
             fixed_incoming["retention"] = legacy_retention
     incoming_policy_version = incoming.get("policy_version", 1)
     try:
@@ -1119,6 +1119,10 @@ async def save_control_settings(
         except Exception:
             await db.rollback()
             raise
+    if int(normalized.get("retention", {}).get("conversation_days", 7)) == 0:
+        import prime_ai_persistence
+
+        await prime_ai_persistence.prune_conversation_turns(0, guild_id=gid)
     return {
         "config": normalized,
         "revision": revision,
@@ -1240,6 +1244,28 @@ async def save_skill(
     return {**catalog, **config, "revision": revision, "updated_by": str(actor), "updated_at": updated_at}
 
 
+_MEMORY_NEGATION_RE = re.compile(
+    r"(?i)(?:\b(?:not|no|never|cannot|can't|disabled|forbidden|without)\b|"
+    r"(?<![\u0600-\u06ff])(?:لا|ليس|ليست|ممنوع|ممنوعة|غير مسموح|بدون|"
+    r"يحظر|لا يجوز)(?![\u0600-\u06ff]))"
+)
+_MEMORY_TOKEN_RE = re.compile(r"[A-Za-z0-9\u0600-\u06ff]{3,}")
+_MEMORY_STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "there", "here",
+    "are", "was", "were", "can", "should", "must", "has", "have", "will",
+    "من", "على", "في", "الى", "إلى", "هذا", "هذه", "ذلك", "تلك", "الذي",
+    "التي", "هو", "هي", "مع", "عن", "كل", "بعض", "عند", "لدى",
+}
+
+
+def _memory_terms(content: str) -> set[str]:
+    return {
+        token.casefold()
+        for token in _MEMORY_TOKEN_RE.findall(str(content or ""))
+        if token.casefold() not in _MEMORY_STOPWORDS
+    }
+
+
 async def save_memory(
     guild_id: int,
     actor_id: int,
@@ -1251,6 +1277,11 @@ async def save_memory(
     memory_id: int | None = None,
     enabled: bool = True,
     source_guild_id: int | None = None,
+    memory_type: str | None = None,
+    importance: int | None = None,
+    source_channel_id: int | None = None,
+    source_message_id: int | None = None,
+    related_user_ids: list[int] | None = None,
     maximum_count: int = 500,
     maximum_content_length: int = 1000,
 ) -> dict:
@@ -1261,6 +1292,29 @@ async def save_memory(
     if scope not in {"GLOBAL", "SERVER", "CHANNEL", "ROLE"}:
         raise ValueError("invalid_memory_scope")
     validate_memory_content(value, maximum_content_length)
+    clean_memory_type = str(memory_type or "FACT").upper()
+    if clean_memory_type not in {
+        "FACT", "PREFERENCE", "DECISION", "CONTEXT", "RELATIONSHIP", "RULE"
+    }:
+        raise ValueError("invalid_memory_type")
+    clean_importance = 3 if importance is None else importance
+    if (
+        isinstance(clean_importance, bool)
+        or not isinstance(clean_importance, int)
+        or not 1 <= clean_importance <= 5
+    ):
+        raise ValueError("invalid_memory_importance")
+    related_ids = []
+    for related_id in related_user_ids or []:
+        if isinstance(related_id, bool) or not str(related_id).isascii() or not str(related_id).isdigit():
+            raise ValueError("invalid_related_user_id")
+        related_ids.append(int(related_id))
+    related_ids = list(dict.fromkeys(related_ids))[:20]
+    for source_id in (source_channel_id, source_message_id):
+        if source_id is not None and (
+            isinstance(source_id, bool) or int(source_id) <= 0
+        ):
+            raise ValueError("invalid_memory_provenance")
     if not isinstance(enabled, bool):
         raise ValueError("invalid_memory_enabled")
     if (
@@ -1296,27 +1350,115 @@ async def save_memory(
                     count = int((await cur.fetchone())["total"])
                 if count >= maximum_count:
                     raise ValueError("memory_limit_reached")
+                async with db.execute(
+                    "SELECT memory_id,content,related_user_ids_json FROM prime_ai_memories WHERE guild_id=? "
+                    "AND scope=? AND scope_id=? AND memory_type=? "
+                    "AND status='ACTIVE' AND source!='AI_CANDIDATE' "
+                    "ORDER BY memory_id DESC LIMIT 100",
+                    (gid, scope, str(scope_id), clean_memory_type),
+                ) as cur:
+                    existing_scope_memories = await cur.fetchall()
+                new_terms = _memory_terms(value)
+                new_negated = bool(_MEMORY_NEGATION_RE.search(value))
+                for existing_memory in existing_scope_memories:
+                    try:
+                        existing_related = json.loads(
+                            existing_memory["related_user_ids_json"] or "[]"
+                        )
+                    except (TypeError, ValueError):
+                        existing_related = []
+                    if (
+                        related_ids
+                        and existing_related
+                        and not (set(related_ids) & {int(item) for item in existing_related})
+                    ):
+                        continue
+                    old_content = str(existing_memory["content"] or "").strip()
+                    if " ".join(old_content.casefold().split()) == " ".join(value.casefold().split()):
+                        raise ValueError(
+                            f"duplicate_memory:{int(existing_memory['memory_id'])}"
+                        )
+                    old_terms = _memory_terms(old_content)
+                    overlap = len(new_terms & old_terms) / max(
+                        1, min(len(new_terms), len(old_terms))
+                    )
+                    if (
+                        new_terms
+                        and old_terms
+                        and overlap >= 0.75
+                        and new_negated != bool(_MEMORY_NEGATION_RE.search(old_content))
+                    ):
+                        raise ValueError(
+                            f"memory_conflict_requires_edit:{int(existing_memory['memory_id'])}"
+                        )
                 cur = await db.execute(
                     "INSERT INTO prime_ai_memories "
                     "(guild_id, content, created_by, created_at, scope, scope_id, enabled, expires_at, "
-                    "updated_at, source, confidence, status, owner_user_id, pinned) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ADMIN', 1.0, 'ACTIVE', NULL, ?)",
+                    "updated_at, source, confidence, status, owner_user_id, pinned, "
+                    "memory_type, importance, source_channel_id, source_message_id, related_user_ids_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ADMIN', 1.0, 'ACTIVE', NULL, ?, ?, ?, ?, ?, ?)",
                     (
                         gid, value, actor, created, scope, str(scope_id), int(enabled),
-                        expires, created, int(pinned),
+                        expires, created, int(pinned), clean_memory_type,
+                        clean_importance, source_channel_id, source_message_id,
+                        json.dumps(related_ids, ensure_ascii=False),
                     ),
                 )
                 mid = int(cur.lastrowid)
             else:
+                async with db.execute(
+                    "SELECT content,memory_type,importance,source_channel_id,"
+                    "source_message_id,related_user_ids_json FROM prime_ai_memories "
+                    "WHERE guild_id=? AND memory_id=? AND scope!='USER' "
+                    "AND source!='AI_CANDIDATE'",
+                    (
+                        int(source_guild_id if source_guild_id is not None else gid),
+                        int(memory_id),
+                    ),
+                ) as cur:
+                    previous = await cur.fetchone()
+                if previous is None:
+                    raise ValueError("memory_not_found")
+                if previous["content"] != value:
+                    await db.execute(
+                        "INSERT INTO prime_ai_memory_revisions "
+                        "(guild_id,memory_id,before_content,after_content,changed_by,"
+                        "changed_at,source_channel_id,source_message_id) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            gid, int(memory_id), previous["content"], value, actor,
+                            created, source_channel_id, source_message_id,
+                        ),
+                    )
+                if memory_type is None:
+                    clean_memory_type = str(previous["memory_type"] or "FACT")
+                if importance is None:
+                    clean_importance = int(previous["importance"] or 3)
+                if source_channel_id is None:
+                    source_channel_id = previous["source_channel_id"]
+                if source_message_id is None:
+                    source_message_id = previous["source_message_id"]
+                if related_user_ids is None:
+                    try:
+                        related_ids = json.loads(
+                            previous["related_user_ids_json"] or "[]"
+                        )
+                    except (TypeError, ValueError):
+                        related_ids = []
+                    if not isinstance(related_ids, list):
+                        related_ids = []
                 cur = await db.execute(
                     "UPDATE prime_ai_memories SET guild_id=?, content=?, scope=?, scope_id=?, enabled=?, "
                     "expires_at=?, updated_at=?, source='ADMIN', confidence=1.0, pinned=?, "
-                    "status='ACTIVE', owner_user_id=NULL "
+                    "status='ACTIVE', owner_user_id=NULL, memory_type=?, importance=?, "
+                    "source_channel_id=?, source_message_id=?, related_user_ids_json=? "
                     "WHERE guild_id=? AND memory_id=? AND scope != 'USER' "
                     "AND source != 'AI_CANDIDATE'",
                     (
                         gid, value, scope, str(scope_id), int(enabled), expires, created,
-                        int(pinned),
+                        int(pinned), clean_memory_type, clean_importance,
+                        source_channel_id, source_message_id,
+                        json.dumps(related_ids, ensure_ascii=False),
                         int(source_guild_id if source_guild_id is not None else gid),
                         int(memory_id),
                     ),
@@ -1328,6 +1470,9 @@ async def save_memory(
         except Exception:
             await db.rollback()
             raise
+    import prime_ai_persistence
+
+    await prime_ai_persistence.sync_memory_snapshot(gid)
     return {
         "id": mid,
         "content": value,
@@ -1343,6 +1488,11 @@ async def save_memory(
         "confidence": 1.0,
         "status": "ACTIVE",
         "owner_user_id": None,
+        "memory_type": clean_memory_type,
+        "importance": clean_importance,
+        "source_channel_id": source_channel_id,
+        "source_message_id": source_message_id,
+        "related_user_ids": related_ids,
     }
 
 
@@ -1442,6 +1592,9 @@ async def create_memory_candidate(
         except Exception:
             await db.rollback()
             raise
+    import prime_ai_persistence
+
+    await prime_ai_persistence.sync_memory_snapshot(gid)
     return {
         "id": memory_id,
         "content": value,
@@ -1471,6 +1624,10 @@ async def set_memory_candidate_message(guild_id: int, memory_id: int, message_id
             (int(message_id), int(guild_id), int(memory_id), timestamp()),
         )
         await db.commit()
+    if cur.rowcount:
+        import prime_ai_persistence
+
+        await prime_ai_persistence.sync_memory_snapshot(int(guild_id))
     return cur.rowcount > 0
 
 
@@ -1548,6 +1705,10 @@ async def resolve_memory_candidate(
         except Exception:
             await db.rollback()
             raise
+    if cur.rowcount:
+        import prime_ai_persistence
+
+        await prime_ai_persistence.sync_memory_snapshot(gid)
     return cur.rowcount > 0
 
 
@@ -1563,6 +1724,10 @@ async def cancel_memory_candidate(
             (int(guild_id), int(memory_id), int(owner_user_id)),
         )
         await db.commit()
+    if cur.rowcount:
+        import prime_ai_persistence
+
+        await prime_ai_persistence.sync_memory_snapshot(int(guild_id))
     return cur.rowcount > 0
 
 
@@ -2056,6 +2221,12 @@ async def prune_expired_data(guild_id: int, settings: dict) -> dict:
         )
         deleted["expired_memories"] = max(0, int(cur.rowcount))
         cur = await db.execute(
+            "DELETE FROM prime_ai_memory_revisions WHERE guild_id=? AND memory_id NOT IN "
+            "(SELECT memory_id FROM prime_ai_memories WHERE guild_id=?)",
+            (int(guild_id), int(guild_id)),
+        )
+        deleted["memory_revisions"] = max(0, int(cur.rowcount))
+        cur = await db.execute(
             "UPDATE prime_ai_operations SET status='EXPIRED', updated_at=? "
             "WHERE guild_id=? AND status='PENDING' AND expires_at <= ?",
             (now, int(guild_id), now),
@@ -2076,4 +2247,15 @@ async def prune_expired_data(guild_id: int, settings: dict) -> dict:
             )
             deleted["operations"] = max(0, int(cur.rowcount))
         await db.commit()
+    import prime_ai_persistence
+
+    retention_days = max(
+        0,
+        min(int(retention.get("conversation_days", 7) or 0), 3650),
+    )
+    deleted["conversation_days"] = await prime_ai_persistence.prune_conversation_turns(
+        retention_days,
+        guild_id=int(guild_id),
+    )
+    await prime_ai_persistence.sync_memory_snapshot(int(guild_id))
     return deleted

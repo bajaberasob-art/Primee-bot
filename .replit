@@ -1,4 +1,4 @@
-modules = ["python-3.11", "nodejs-24"]
+modules = ["python-3.11", "nodejs-24", "postgresql-16"]
 
 [[ports]]
 localPort = 1000
@@ -26,7 +26,7 @@ externalPort = 3001
 
 [nix]
 channel = "stable-25_05"
-packages = ["freetype", "lcms2", "libimagequant", "libjpeg", "libsodium", "libtiff", "libwebp", "libxcrypt", "openjpeg", "tcl", "tk", "zlib"]
+packages = ["freetype", "lcms2", "libimagequant", "libjpeg", "libsodium", "libtiff", "libwebp", "libxcrypt", "openjpeg", "postgresql", "tcl", "tk", "zlib"]
 
 [deployment]
 deploymentTarget = "cloudrun"
