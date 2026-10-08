@@ -1,0 +1,686 @@
+﻿Memory + Conversation Intelligence System
+
+أريد بناء نظام Memory + Conversation Intelligence متكامل للبوت، وليس مجرد نظام لحفظ الرسائل.
+
+الهدف هو أن يمتلك البوت ذاكرة Persistent وذكاء لفهم سياق السيرفر والمحادثات والأعضاء والقنوات، مع القدرة على استرجاع السياق المناسب بعد Restart أو Shutdown، مع منع خلط محادثات الأعضاء أو القنوات المختلفة.
+
+قاعدة أساسية
+
+ممنوع تعديل أو حذف أو إعادة إنشاء أي ملف أو قاعدة بيانات قبل الحصول على موافقتي الصريحة بعد انتهاء مرحلة الـAudit.
+
+المرحلة الأولى المطلوبة الآن هي Audit فقط.
+
+افحص المشروع الحالي بالكامل، ثم أعطني تقريرًا واضحًا بما هو موجود، وما هو ناقص، وما يحتاج إلى تعديل.
+
+بعد التقرير توقف تمامًا وانتظر موافقتي.
+
+---
+
+1. Server & Conversation Memory
+
+يجب أن يفهم النظام سياق السيرفر بشكل عام، مع فصل المحادثات داخليًا.
+
+يجب أن يميز بين:
+
+- Guild / Server
+- Channel
+- Topic
+- User / Member
+- User ID
+- Message
+- Message Author
+- Reply Target
+- Reply
+- Mention
+- Message Reference
+- Conversation Thread
+- Timestamp
+- Message Sequence
+
+لا يجوز اعتبار جميع رسائل السيرفر Conversation واحدة.
+
+مثال:
+
+- أحمد يتحدث عن السيارات.
+- سارة تسأل عن الدراسة.
+- محمد يتحدث عن السيرفر.
+- خالد يرد على أحمد.
+
+يجب أن يعرف النظام أي رسالة مرتبطة بأي:
+
+- User
+- Conversation
+- Thread
+- Topic
+- Channel
+
+ويجب ألا يخلط بين المحادثات المتزامنة.
+
+---
+
+2. Memory Architecture
+
+قسّم الذاكرة إلى طبقات واضحة:
+
+- Short-Term Context
+- Conversation Memory
+- Channel Memory
+- User Memory
+- User Preferences
+- Server Memory
+- Important Facts
+- Permanent / Pinned Memory
+
+لا تحفظ جميع الرسائل إلى الأبد.
+
+يجب أن يكون الـShort-Term Context مؤقتًا وقابلًا للانتهاء أو التلخيص.
+
+أما المعلومات التي يتم تثبيتها بشكل صريح من شخص مصرح له فيجب تخزينها كـPermanent Memory.
+
+---
+
+3. Permanent / Pinned Memory
+
+أريد ميزة مستقلة باسم:
+
+Permanent Memory / Pinned Memory
+
+إذا قام Administrator أو شخص مصرح له بوضوح باستخدام عبارات مثل:
+
+- "احفظ هذا الشيء"
+- "تذكر هذا"
+- "خزن هذه المعلومة"
+- "احفظ أن..."
+
+أو استخدم Command مثل:
+
+"/memory save"
+
+فيجب اعتبار الطلب Permanent Memory إذا كان المستخدم يملك الصلاحية.
+
+أمثلة:
+
+"احفظ أن اسم صاحب هذا الحساب أحمد."
+
+"احفظ أن محمد هو المسؤول عن قسم الدعم."
+
+"تذكر أن قناة الدعم هي #support."
+
+يجب تخزين هذه المعلومات بشكل دائم بحيث يستطيع البوت استرجاعها لاحقًا.
+
+مثال:
+
+المدير:
+"من المسؤول عن الدعم؟"
+
+البوت:
+"محمد."
+
+---
+
+4. Persistent Storage
+
+Permanent Memory يجب ألا تعتمد على RAM أو In-Memory Cache.
+
+يجب أن تبقى بعد:
+
+- Restart
+- Shutdown
+- Crash
+- Redeploy
+- إعادة تشغيل Replit
+- إعادة تشغيل البوت
+
+يجب استخدام Persistent Database / Persistent Storage كمصدر أساسي.
+
+بعد تشغيل البوت من جديد يجب أن يتم تحميل Permanent Memory تلقائيًا.
+
+---
+
+5. Admin Authorization
+
+Permanent Memory ليست متاحة لجميع الأعضاء تلقائيًا.
+
+يجب استخدام:
+
+- Discord Permissions
+- Server Policy
+- Existing Permission System إن وجد
+
+لتحديد من يستطيع:
+
+- Save Memory
+- Edit Memory
+- Delete Memory
+- View Memory
+
+لا يجوز للـAI منح نفسه أو منح المستخدم صلاحيات.
+
+السلطة الحقيقية يجب أن تأتي من Discord Permissions وServer Policy.
+
+---
+
+6. Memory Data Model
+
+كل Permanent Memory يجب أن تحتوي على سجل واضح يتضمن، حسب الحاجة:
+
+- Guild ID
+- Memory ID
+- Content
+- Memory Type
+- Importance
+- Created By
+- Created At
+- Updated At
+- Source Channel
+- Source Message ID
+- Related User IDs
+- Status
+
+ويجب أن تكون قابلة للإدارة من الأشخاص المصرح لهم.
+
+الأوامر المطلوبة:
+
+"/memory save"
+
+"/memory list"
+
+"/memory search"
+
+"/memory edit"
+
+"/memory delete"
+
+هذه الأوامر يجب ألا تحذف أو تعدل أي بيانات أخرى في قاعدة البيانات بالخطأ.
+
+---
+
+7. Memory Confirmation
+
+عند نجاح حفظ Permanent Memory يجب أن يؤكد البوت بوضوح.
+
+مثال:
+
+"تم حفظ المعلومة في الذاكرة الدائمة."
+
+يجب أن يكون هناك فرق واضح بين:
+
+- Temporary Conversation Context
+- Permanent Memory
+
+إذا كانت المعلومة Permanent، يجب أن تكون قابلة للاسترجاع بعد Restart.
+
+---
+
+8. Memory Retrieval
+
+عند سؤال المستخدم عن معلومة سابقة، يجب البحث في طبقة الذاكرة المناسبة قبل الإجابة.
+
+الأولوية المقترحة:
+
+1. Permanent Memory
+2. Server Memory
+3. User Memory
+4. Relevant Channel Memory
+5. Conversation Context
+6. Recent Messages
+
+لكن يجب احترام صلاحيات الوصول.
+
+لا يجوز استخدام Memory خاصة بمستخدم أو سياق غير مسموح به للإجابة على مستخدم آخر.
+
+---
+
+9. Memory Source & Provenance
+
+كل Memory مهمة يجب أن يكون لها مصدر واضح.
+
+مثال:
+
+"محمد مسؤول عن الدعم."
+
+يجب أن يعرف النظام:
+
+- من حفظها؟
+- متى تم حفظها؟
+- من أي قناة؟
+- ما الرسالة المصدر؟
+- هل هي Permanent Memory؟
+- هل تم تعديلها؟
+- ما النسخة الحالية؟
+
+لا يجوز للنموذج اختراع Memory غير موجودة فعليًا في قاعدة البيانات.
+
+---
+
+10. Memory Updates & Conflicts
+
+إذا ظهرت معلومة جديدة تناقض Permanent Memory قديمة، لا تستبدل القديمة بصمت.
+
+مثال:
+
+المعلومة القديمة:
+
+"محمد مسؤول عن الدعم."
+
+ثم يقول Administrator:
+
+"احفظ أن خالد أصبح مسؤول الدعم بدل محمد."
+
+يجب اعتبار ذلك تحديثًا رسميًا.
+
+يجب:
+
+- الاحتفاظ بسجل التغيير عند الحاجة.
+- تحديد المعلومة الجديدة على أنها الحالية.
+- عدم تغيير Permanent Memory تلقائيًا بواسطة الـAI.
+- عدم السماح للنموذج بتعديل الذاكرة الدائمة دون تصريح.
+
+---
+
+11. User Identity Resolution
+
+يجب استخدام Discord User ID وDiscord Member Object لتحديد الأعضاء.
+
+إذا قال المستخدم:
+
+"أعط أحمد رتبة"
+
+وكان أحمد موجودًا في السيرفر، يجب محاولة تحديده من Discord Member Object.
+
+إذا كان هناك أكثر من أحمد:
+
+"أي أحمد تقصد؟"
+
+لا تطلب User ID يدويًا إذا كان Discord يستطيع تحديد العضو.
+
+إذا قال المستخدم:
+
+- "هذا الشخص"
+- "هو"
+- "هذا"
+- "اللي فوق"
+- "أعطه رتبة"
+
+فيجب استخدام السياق المتاح، مثل:
+
+- Reply
+- Mention
+- Message Reference
+- Conversation Context
+- User Identity
+
+لتحديد الشخص المقصود.
+
+إذا كان هناك أكثر من احتمال، يجب السؤال بدل التخمين.
+
+---
+
+12. Channel Memory
+
+كل قناة يجب أن تمتلك Context مستقلًا.
+
+مثال:
+
+- #general
+- #سوالف
+- #support
+- #commands
+
+يجب عدم خلط Conversation الخاصة بقناة مع قناة أخرى.
+
+وفي نفس الوقت يجب أن يستطيع البوت استخدام Server-level information أو المعلومات المسموح بها من قنوات أخرى عندما تكون ذات صلة.
+
+---
+
+13. Talk Channel
+
+أريد ميزة:
+
+Talk Channel / قناة السوالف
+
+يستطيع Administrator تحديد قناة معينة مثل:
+
+"#سوالف"
+
+عند تفعيلها، يتعامل البوت تلقائيًا مع الرسائل في هذه القناة.
+
+لا يحتاج العضو إلى:
+
+- @Bot
+- "/ask_ai"
+- Prefix
+- Command
+- Reply للبوت
+
+مثال:
+
+محمد:
+"وش رايك بالمباراة؟"
+
+البوت:
+"كانت حلوة خصوصًا الشوط الثاني."
+
+محمد:
+"ومن تتوقع يفوز؟"
+
+البوت:
+"أتوقع الفريق الأقوى حاليًا."
+
+هذه الميزة يجب أن تعمل فقط في القناة المحددة.
+
+لا تجعل البوت يرد تلقائيًا في جميع قنوات السيرفر.
+
+---
+
+14. Talk Channel Response Style
+
+ردود Talk Channel يجب أن تكون:
+
+- قصيرة
+- طبيعية
+- مباشرة
+- بدون فلسفة
+- بدون مقالات
+- بدون إعادة كلام المستخدم
+- بدون مقدمات طويلة
+
+الافتراضي:
+
+1 إلى 3 جمل قصيرة.
+
+إذا كان السؤال بسيطًا، تكفي جملة واحدة.
+
+إذا كانت الرسالة لا تحتاج ردًا، يمكن للبوت تجاهلها.
+
+---
+
+15. Multi-User Context
+
+يجب أن يستطيع النظام التعامل مع عدة أعضاء يتحدثون في الوقت نفسه دون خلط السياقات.
+
+استخدم، حسب الحاجة:
+
+- Guild ID
+- Channel ID
+- User ID
+- Message ID
+- Reply Message ID
+- Mentioned User IDs
+- Conversation Thread
+- Topic
+- Timestamp
+
+لتحديد:
+
+- من يتحدث؟
+- مع من؟
+- عن ماذا؟
+- ما الرسائل المرتبطة؟
+
+مثال:
+
+أحمد:
+"وش رايك بالسيارة؟"
+
+محمد:
+"أنا أشوفها ممتازة."
+
+سارة:
+"وش أفضل تخصص؟"
+
+يجب ألا يعتبر رد محمد متعلقًا بسؤال سارة.
+
+---
+
+16. Context Resolution
+
+إذا قال المستخدم:
+
+"طيب كم سعرها؟"
+
+يجب ألا يبدأ البوت من الصفر.
+
+يبحث عن آخر Context مناسب بناءً على:
+
+- User
+- Topic
+- Thread
+- Recent Messages
+- Replies
+- Mentions
+- Conversation State
+
+إذا كان هناك أكثر من احتمال، يسأل سؤالًا قصيرًا للتوضيح.
+
+لا تخمن عند وجود ambiguity حقيقي.
+
+---
+
+17. Restart Recovery
+
+يجب اختبار السيناريو التالي:
+
+1. المستخدم يتحدث مع البوت.
+2. يتم إيقاف البوت.
+3. يتم تشغيله مرة أخرى.
+4. المستخدم يقول:
+   "نكمل من أمس."
+
+يجب أن يستطيع النظام استرجاع السياق السابق إذا كان محفوظًا.
+
+ويجب أن تكون Permanent Memories متاحة فور عودة البوت.
+
+---
+
+18. Privacy & Security
+
+يجب عدم خلط معلومات الأعضاء.
+
+لا تستخدم User Memory خاصة بالمستخدم A للإجابة على المستخدم B إلا إذا كانت:
+
+- Server-level
+- Public
+- أو مصرحًا بمشاركتها
+
+يجب ألا يستطيع الـAI:
+
+- منح نفسه صلاحيات.
+- منح المستخدم صلاحيات.
+- تعديل Permissions.
+- تجاوز Server Policy.
+
+Discord Permissions وServer Policy هما مصدر السلطة الحقيقي.
+
+---
+
+19. Performance
+
+لا ترسل كامل تاريخ السيرفر إلى AI مع كل رسالة.
+
+استخدم Retrieval Architecture تعتمد على المعلومات ذات الصلة فقط، مثل:
+
+- Relevant Memory Retrieval
+- Recent Messages
+- Conversation State
+- Summaries
+- Importance
+- Semantic Search / Relevant Search
+
+الهدف هو تقليل Token Usage وتحسين السرعة ومنع إدخال Context غير متعلق بالمحادثة.
+
+---
+
+20. Anti-Spam & Loop Protection
+
+Talk Channel لا يعني أن البوت يجب أن يرد على كل رسالة.
+
+استخدم حسب الحاجة:
+
+- Rate Limits
+- Cooldowns
+- Duplicate Detection
+- Bot Message Ignore
+- Spam Protection
+- Message Batching / Context Grouping
+
+إذا أرسل المستخدم عدة رسائل متتالية بسرعة، يمكن للنظام اعتبارها Context واحدًا عند الحاجة.
+
+يجب منع:
+
+- Reply Loops
+- Bot-to-Bot Loops
+- تكرار الردود
+- الردود المزعجة على الرسائل المتتالية
+
+---
+
+21. Dashboard Integration
+
+ادمج إعدادات Memory داخل الـDashboard الحالي.
+
+لا تعيد بناء الـDashboard من الصفر.
+
+يجب أن يستطيع Administrator التحكم في:
+
+- Talk Channel
+- Enable / Disable Talk Channel
+- Memory
+- Permanent Memory
+- Memory Permissions
+- Memory Management
+- Channel Context
+- Memory Retention
+
+ويجب أن تكون Permanent Memory قابلة للإدارة بسهولة ووضوح.
+
+---
+
+22. Temporary Context vs Permanent Memory
+
+يجب أن يكون الفرق صارمًا بين:
+
+Temporary Conversation Context
+
+و
+
+Permanent Memory
+
+مثال:
+
+المستخدم:
+"اليوم رحت المطعم."
+
+هذه ليست Permanent Memory تلقائيًا.
+
+لكن Administrator يقول:
+
+"احفظ أن هذا المطعم هو المطعم المفضل للسيرفر."
+
+هنا تصبح المعلومة Permanent Memory.
+
+لا يجوز للـAI تحويل أي معلومة إلى Permanent Memory من تلقاء نفسه.
+
+Permanent Memory تحتاج إلى:
+
+- أمر صريح من شخص مصرح له.
+  أو
+- إجراء من Dashboard مصرح به.
+
+---
+
+23. Mandatory Audit Before Any Modification
+
+قبل تنفيذ أي تعديل، افحص المشروع الحالي بالكامل.
+
+تحقق تحديدًا من وجود أو عدم وجود:
+
+Existing Memory
+
+- هل توجد Memory حاليًا؟
+- أين يتم تخزينها؟
+- هل التخزين Persistent؟
+- هل تبقى بعد Restart؟
+- هل توجد User Memory؟
+- هل توجد Server Memory؟
+- هل توجد Channel Memory؟
+- هل توجد Conversation Memory؟
+- هل توجد Permanent / Pinned Memory؟
+
+Memory Management
+
+- هل يمكن حفظ Memory بأمر إداري؟
+- هل يمكن استرجاعها؟
+- هل يمكن تعديلها؟
+- هل يمكن حذفها؟
+- هل توجد Memory Permissions؟
+- هل يتم تسجيل مصدر الذاكرة؟
+- هل توجد آلية لمعالجة التعارضات؟
+
+Context Isolation
+
+- هل يتم فصل المستخدمين؟
+- هل يتم فصل القنوات؟
+- هل يتم فصل المحادثات؟
+- هل يدعم Replies؟
+- هل يدعم Mentions؟
+- هل يدعم Message References؟
+- هل يستطيع تحديد الأعضاء من Discord بدون طلب ID؟
+- هل توجد مشكلة في خلط Context بين عدة أعضاء؟
+
+Talk Channel
+
+- هل توجد Talk Channel حاليًا؟
+- هل يمكن تحديد قناة واحدة لها؟
+- هل يمكن تشغيلها وإيقافها؟
+- هل يرد البوت فقط داخل القناة المحددة؟
+- هل توجد Rate Limits أو Spam Protection؟
+
+Persistence
+
+- هل تفقد الذاكرة بعد Restart؟
+- هل توجد مشكلة في إعادة تحميل الذاكرة؟
+- هل البيانات محفوظة في Database أم RAM فقط؟
+
+---
+
+24. Required Audit Report
+
+بعد فحص المشروع، أعطني تقرير Audit واضحًا يتضمن:
+
+1. ما الموجود حاليًا.
+2. ما الناقص.
+3. الأخطاء المؤكدة.
+4. المشاكل المحتملة.
+5. الملفات أو الأنظمة التي تحتاج تعديلًا.
+6. كيف سيتم ربط Server Memory مع Channel Memory وUser Memory وConversation Context.
+7. كيف سيتم تنفيذ Permanent / Pinned Memory.
+8. كيف سيتم تنفيذ Talk Channel.
+9. كيف سيتم منع خلط محادثات الأعضاء.
+10. كيف سيتم ضمان بقاء الذاكرة بعد Restart.
+11. ما المخاطر أو التعارضات المحتملة مع النظام الحالي.
+12. ما المقترح تنفيذه لاحقًا، بدون تنفيذ فعلي الآن.
+
+Important
+
+في هذه المرحلة:
+
+Audit فقط.
+
+ممنوع:
+
+- تعديل الملفات.
+- حذف الملفات.
+- إعادة إنشاء الملفات.
+- تعديل قاعدة البيانات.
+- ترحيل Database Schema.
+- تغيير Dashboard.
+- تغيير Commands.
+- تغيير Memory Logic.
+- تشغيل Migration.
+- حذف بيانات.
+- إعادة تشغيل أو إعادة تهيئة أي Storage بهدف التعديل.
+
+لا تنفذ أي إصلاحات أو تغييرات قبل أن أعطيك موافقتي الصريحة.
+
+بعد انتهاء الـAudit، توقف وانتظر موافقتي.
