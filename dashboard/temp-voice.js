@@ -44,6 +44,7 @@
     var root = node("section", { class: "temp-voice", dir: "rtl", "aria-label": "إعدادات الرومات المؤقتة" });
     var liveTimer = null, disposed = false, loading = true, writing = false, uploading = false;
     var snap = null, cfg = null, baseRevision = 0, dirty = false, issue = "", notice = "", conflict = false;
+    var conflictConfig = null, remoteRevision = null;
     var draftBanner = null, localUrl = "", modal = null;
     host.replaceChildren(root);
     function freshConfig(source) {
@@ -98,6 +99,8 @@
         baseRevision = data.revision;
         dirty = false;
         conflict = false;
+        conflictConfig = null;
+        remoteRevision = null;
         draftBanner = data.banner || null;
       } else if (changed && dirty) conflict = true;
     }
@@ -135,7 +138,8 @@
         if (response.status === 409) {
           var current = await response.json().catch(function () { return {}; });
           conflict = true;
-          snap.revision = current.revision;
+          conflictConfig = current.config || null;
+          remoteRevision = current.revision;
           status.className = "tv-alert is-warn";
           status.textContent = "تعارض بالحفظ؛ مسودتك باقية. حدّث البيانات أو راجعها قبل الكتابة.";
         } else {
@@ -256,7 +260,7 @@
         bank.append(node("button", { type: "button", class: "tv-bank-button", disabled: cfg.buttons.length >= 20,
           text: "+ " + option.label, onclick: function () { set("buttons", cfg.buttons.concat(option.id)); render(); } }));
       });
-      active.append(node("h3", { text: "الأزرار المتوفرة" },), bank);
+      active.append(node("h3", { text: "الأزرار المتوفرة" }), bank);
       return active;
     }
     function move(index, direction) {
