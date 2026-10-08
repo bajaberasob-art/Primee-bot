@@ -5234,8 +5234,13 @@ async def api_prime_ai_sandbox(req):
             config=snapshot["config"],
         )
     except prime_ai_service.AIProviderUnavailable as error:
-        if error.status_code == 429:
-            return json_error(429, "ai_provider_rate_limited")
+        if error.status_code in {429, 503}:
+            error_key = (
+                "ai_provider_rate_limited"
+                if error.status_code == 429
+                else "ai_provider_busy"
+            )
+            return json_error(error.status_code, error_key)
         return json_error(502, "ai_provider_unavailable")
     except prime_ai_runtime.InvalidToolPlan:
         return json_error(502, "ai_plan_unavailable")
@@ -5521,8 +5526,13 @@ async def api_test_prime_ai(req):
             audit_action="اختبار PRIME AI",
         )
     except prime_ai_service.AIProviderUnavailable as error:
-        if error.status_code == 429:
-            return json_error(429, "ai_provider_rate_limited")
+        if error.status_code in {429, 503}:
+            error_key = (
+                "ai_provider_rate_limited"
+                if error.status_code == 429
+                else "ai_provider_busy"
+            )
+            return json_error(error.status_code, error_key)
         return json_error(502, "ai_provider_unavailable")
     except ValueError:
         return json_error(

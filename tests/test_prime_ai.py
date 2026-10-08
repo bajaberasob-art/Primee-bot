@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import asyncio
 import unittest
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -1586,11 +1587,49 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized["provider"]["name"], "Google Gemini")
         self.assertEqual(normalized["provider"]["model"], "gemini-3.8-flash")
 
-    def test_provider_defaults_to_two_retries(self):
+    def test_provider_default_retry_budget_is_bounded(self):
         self.assertEqual(
             prime_ai_control.DEFAULT_CONTROL_SETTINGS["provider"]["retry_count"],
-            2,
+            1,
         )
+
+    async def test_provider_gate_bounds_running_and_waiting_requests(self):
+        gate = ai._BoundedProviderGate(
+            max_active=1,
+            max_waiting=1,
+            queue_timeout=0.2,
+        )
+        await gate.acquire()
+        waiting = asyncio.create_task(gate.acquire())
+        await asyncio.sleep(0)
+
+        self.assertEqual(gate._active, 1)
+        self.assertEqual(len(gate._waiters), 1)
+        with self.assertRaises(ai.AIProviderUnavailable) as overloaded:
+            await gate.acquire()
+        self.assertEqual(overloaded.exception.status_code, 503)
+
+        await gate.release()
+        await waiting
+        self.assertEqual(gate._active, 1)
+        await gate.release()
+        self.assertEqual(gate._active, 0)
+
+    def test_rate_bucket_capacity_fails_closed_without_evicting_active_users(self):
+        with patch.object(ai, "MAX_RATE_BUCKETS", 1):
+            self.assertEqual(
+                ai.allow_request(
+                    10, 20, action="capacity", limit=2, window_seconds=3600
+                ),
+                0,
+            )
+            self.assertEqual(
+                ai.allow_request(
+                    10, 21, action="capacity", limit=2, window_seconds=3600
+                ),
+                3600,
+            )
+        self.assertEqual(len(ai._RATE_BUCKETS), 1)
 
     async def test_current_turn_preferences_apply_when_profile_is_preloaded(self):
         session = FakeProviderSession()
@@ -1644,7 +1683,7 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.post_count, 2)
 
     async def test_persistent_503_falls_back_to_tested_gemini_flash_lite(self):
-        session = FakeProviderSession(statuses=[503, 503, 503, 200])
+        session = FakeProviderSession(statuses=[503, 503, 200])
 
         answer = await ai.generate_response(
             session,
@@ -1655,7 +1694,7 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(answer, "PRIME AI answer")
-        self.assertEqual(session.post_count, 4)
+        self.assertEqual(session.post_count, 3)
         self.assertTrue(session.url.endswith(
             "/gemini-3.1-flash-lite:generateContent"
         ))
@@ -4681,14 +4720,25 @@ class PrimeAIActionEngineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_channel_mode_edit_preserves_existing_everyone_overwrites_and_verifies(self):
         guild, actor, channel, bot, _channels, _members = self._runtime_context()
+        from cogs.chat_jail import ChatJailCog
+
+        chat_cog = ChatJailCog(bot)
+        bot.get_cog = lambda name: chat_cog if name == "ChatJailCog" else None
         config = self._action_config("set_channel_mode")
-        overwrite_state = {"send_messages": None, "embed_links": True}
+        overwrite_state = {
+            "send_messages": None,
+            "send_messages_in_threads": None,
+            "embed_links": True,
+        }
 
         def overwrite_for(_role):
             return SimpleNamespace(**overwrite_state)
 
         async def set_permissions(_role, *, overwrite, reason):
             overwrite_state["send_messages"] = overwrite.send_messages
+            overwrite_state["send_messages_in_threads"] = (
+                overwrite.send_messages_in_threads
+            )
             overwrite_state["embed_links"] = overwrite.embed_links
 
         channel.overwrites_for = overwrite_for

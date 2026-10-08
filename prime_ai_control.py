@@ -299,7 +299,7 @@ DEFAULT_CONTROL_SETTINGS: dict[str, Any] = {
         "thinking_level": "medium",
         "max_tokens": 1200,
         "timeout_seconds": 30,
-        "retry_count": 2,
+        "retry_count": 1,
     },
     "response": {
         "maximum_length": 3500,

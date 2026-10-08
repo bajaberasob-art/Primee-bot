@@ -3,7 +3,10 @@ import json
 import math
 import logging
 import asyncio
+import copy
 import re
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -411,6 +414,51 @@ class AITools(commands.Cog):
         self._retention_task: asyncio.Task | None = None
         self._registered_view_keys: set[str] = set()
         self._restore_lock = asyncio.Lock()
+        self._runtime_policy_cache: OrderedDict[
+            int, tuple[float, dict, dict]
+        ] = OrderedDict()
+        self._runtime_policy_locks: dict[int, asyncio.Lock] = {}
+
+    async def _runtime_policies(self, guild_id: int) -> tuple[dict, dict]:
+        """Share the two per-message policy reads for a short, bounded interval."""
+        key = int(guild_id)
+
+        def cached():
+            entry = self._runtime_policy_cache.get(key)
+            if entry is None or time.monotonic() - entry[0] >= 2.0:
+                return None
+            self._runtime_policy_cache.move_to_end(key)
+            return copy.deepcopy(entry[1]), copy.deepcopy(entry[2])
+
+        result = cached()
+        if result is not None:
+            return result
+
+        lock = self._runtime_policy_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            result = cached()
+            if result is not None:
+                return result
+            settings = await prime_ai_service.get_settings(key)
+            snapshot = await prime_ai_control.get_control_settings(key)
+            self._runtime_policy_cache[key] = (
+                time.monotonic(),
+                settings,
+                snapshot,
+            )
+            self._runtime_policy_cache.move_to_end(key)
+            while len(self._runtime_policy_cache) > 256:
+                self._runtime_policy_cache.popitem(last=False)
+            if len(self._runtime_policy_locks) > 256:
+                for old_key in tuple(self._runtime_policy_locks):
+                    old_lock = self._runtime_policy_locks[old_key]
+                    if (
+                        old_key != key
+                        and old_key not in self._runtime_policy_cache
+                        and not old_lock.locked()
+                    ):
+                        self._runtime_policy_locks.pop(old_key, None)
+            return copy.deepcopy(settings), copy.deepcopy(snapshot)
 
     def _register_persistent_view(
         self, key: str, view: discord.ui.View, message_id: int | None = None
@@ -2606,8 +2654,7 @@ class AITools(commands.Cog):
         turn_message_id = getattr(message, "id", None)
         turn_key = str(turn_message_id or "")
         try:
-            settings = await prime_ai_service.get_settings(message.guild.id)
-            snapshot = await prime_ai_control.get_control_settings(message.guild.id)
+            settings, snapshot = await self._runtime_policies(message.guild.id)
             config = snapshot["config"]
             if settings["enabled"]:
                 await self.moderate_message(message, config, settings)
@@ -2811,8 +2858,33 @@ class AITools(commands.Cog):
                     conversation=conversation,
                     config=config,
                 )
+            except prime_ai_service.AIProviderUnavailable as error:
+                LOGGER.warning(
+                    "[AI] Semantic intent routing could not reach the provider (%s).",
+                    str(error)[:80] or "unknown",
+                )
+                if error.status_code == 503:
+                    notice = (
+                        "طلبات PRIME AI مزدحمة حالياً. لم يُنفّذ أي إجراء؛ "
+                        "انتظر قليلاً ثم أعد الطلب."
+                    )
+                elif error.status_code == 429:
+                    notice = (
+                        "وصل PRIME AI إلى حد الاستخدام الحالي لدى المزوّد. "
+                        "لم يُنفّذ أي إجراء؛ حاول لاحقاً."
+                    )
+                else:
+                    notice = (
+                        "تعذر الاتصال بخدمة PRIME AI الآن. لم يُنفّذ أي إجراء؛ "
+                        "حاول مجدداً بعد قليل."
+                    )
+                await message.reply(
+                    notice,
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
             except (
-                prime_ai_service.AIProviderUnavailable,
                 prime_ai_service.AIChannelDenied,
                 prime_ai_service.AISettingsDisabled,
             ):
@@ -3113,7 +3185,12 @@ class AITools(commands.Cog):
                 "[AI] Mention/reply provider request failed (%s).",
                 str(error)[:80] or "unknown",
             )
-            if error.status_code == 429:
+            if error.status_code == 503:
+                failure_message = (
+                    "طلبات PRIME AI مزدحمة حالياً. لم يُنفّذ أي إجراء؛ "
+                    "انتظر قليلاً ثم أعد الطلب."
+                )
+            elif error.status_code == 429:
                 failure_message = (
                     "وصل نموذج Gemini إلى حد الاستخدام الحالي؛ لم ينفصل PRIME AI عن "
                     "Discord، لكن تعذر إكمال هذا الرد. حاول بعد قليل أو راجع حد "

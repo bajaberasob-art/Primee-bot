@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.sanctions_voice import sanctions_policy_check
+from command_policy_service import CommandPolicyDenied, ensure_command_policy
 from database import (
     add_channel_restriction,
     get_channel_restrictions,
@@ -46,18 +47,15 @@ async def chat_policy_check(interaction: discord.Interaction) -> bool:
         raise app_commands.NoPrivateMessage()
     command = getattr(interaction, "command", None)
     name = str(getattr(command, "name", "") or "").lower()
-    policy = (await get_command_policies(interaction.guild.id)).get(name)
-    if not policy:
-        return True
-    if not policy.get("enabled", True):
-        raise app_commands.CheckFailure("command_disabled")
-    role_ids = {int(role.id) for role in getattr(interaction.user, "roles", [])}
-    allowed_roles = {int(role_id) for role_id in policy.get("allowed_roles", [])}
-    if allowed_roles and not role_ids.intersection(allowed_roles):
-        raise app_commands.CheckFailure("command_role_restricted")
-    allowed_channels = {int(channel_id) for channel_id in policy.get("allowed_channels", [])}
-    if allowed_channels and int(interaction.channel_id or 0) not in allowed_channels:
-        raise app_commands.CheckFailure("command_channel_restricted")
+    try:
+        await ensure_command_policy(
+            interaction.guild.id,
+            name,
+            interaction.user,
+            interaction.channel_id,
+        )
+    except CommandPolicyDenied as error:
+        raise app_commands.CheckFailure(str(error)) from error
     return True
 
 
@@ -202,6 +200,28 @@ class ChatJailCog(commands.Cog):
             overwrite=overwrite,
             reason=reason,
         )
+
+    async def execute_channel_mode_command(
+        self,
+        channel: discord.TextChannel,
+        actor: discord.Member,
+        *,
+        open_channel: bool,
+    ) -> None:
+        values = (
+            {"send_messages": True, "send_messages_in_threads": True}
+            if open_channel
+            else {"send_messages": False, "send_messages_in_threads": False}
+        )
+        command = "unlock" if open_channel else "lock"
+        await self._set_everyone(channel, f"{command} by {actor}", **values)
+        fresh = await channel.guild.fetch_channel(int(channel.id))
+        permissions = fresh.overwrites_for(channel.guild.default_role)
+        if (
+            permissions.send_messages is not open_channel
+            or permissions.send_messages_in_threads is not open_channel
+        ):
+            raise RuntimeError("discord_channel_mode_not_confirmed")
 
     async def _managed_text_channels(self, guild: discord.Guild) -> list[discord.TextChannel]:
         routes = await get_logging_channels(guild.id)
@@ -361,8 +381,10 @@ class ChatJailCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_channels=True)
     async def lock(self, interaction: discord.Interaction):
         try:
-            await self._set_everyone(interaction.channel, f"lock by {interaction.user}", send_messages=False, send_messages_in_threads=False)
-        except (discord.Forbidden, discord.HTTPException):
+            await self.execute_channel_mode_command(
+                interaction.channel, interaction.user, open_channel=False
+            )
+        except (discord.Forbidden, discord.HTTPException, RuntimeError):
             return await self._error(interaction, "lock", "تعذر قفل القناة.")
         return await self._channel_response(interaction, "lock", "🔒 قفل القناة", f"تم قفل {interaction.channel.mention}.", color=0xEF4444)
 
@@ -371,8 +393,10 @@ class ChatJailCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_channels=True)
     async def unlock(self, interaction: discord.Interaction):
         try:
-            await self._set_everyone(interaction.channel, f"unlock by {interaction.user}", send_messages=True, send_messages_in_threads=True)
-        except (discord.Forbidden, discord.HTTPException):
+            await self.execute_channel_mode_command(
+                interaction.channel, interaction.user, open_channel=True
+            )
+        except (discord.Forbidden, discord.HTTPException, RuntimeError):
             return await self._error(interaction, "unlock", "تعذر فتح القناة.")
         return await self._channel_response(interaction, "unlock", "🔓 فتح القناة", f"تم فتح {interaction.channel.mention}.", color=0x22C55E)
 

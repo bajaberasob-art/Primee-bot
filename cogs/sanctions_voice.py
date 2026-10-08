@@ -31,6 +31,7 @@ from database import (
     remove_text_mute,
     remove_voice_ban,
 )
+from command_policy_service import CommandPolicyDenied, ensure_command_policy
 
 
 logger = logging.getLogger("SanctionsVoiceCog")
@@ -52,18 +53,15 @@ async def sanctions_policy_check(interaction: discord.Interaction) -> bool:
     name = str(getattr(command, "name", "") or "").lower()
     if not name:
         return True
-    policy = (await get_command_policies(interaction.guild.id)).get(name)
-    if not policy:
-        return True
-    if not policy.get("enabled", True):
-        raise app_commands.CheckFailure("command_disabled")
-    roles = {int(role.id) for role in getattr(interaction.user, "roles", [])}
-    allowed_roles = {int(role_id) for role_id in policy.get("allowed_roles", [])}
-    if allowed_roles and not roles.intersection(allowed_roles):
-        raise app_commands.CheckFailure("command_role_restricted")
-    allowed_channels = {int(channel_id) for channel_id in policy.get("allowed_channels", [])}
-    if allowed_channels and int(interaction.channel_id or 0) not in allowed_channels:
-        raise app_commands.CheckFailure("command_channel_restricted")
+    try:
+        await ensure_command_policy(
+            interaction.guild.id,
+            name,
+            interaction.user,
+            interaction.channel_id,
+        )
+    except CommandPolicyDenied as error:
+        raise app_commands.CheckFailure(str(error)) from error
     return True
 
 
@@ -215,15 +213,57 @@ class SanctionsVoiceCog(commands.Cog):
 
     @staticmethod
     def _hierarchy_ok(interaction: discord.Interaction, member: discord.Member) -> bool:
-        actor = interaction.user
+        return SanctionsVoiceCog._member_hierarchy_ok(
+            interaction.guild, interaction.user, member
+        )
+
+    @staticmethod
+    def _member_hierarchy_ok(guild: discord.Guild, actor: discord.Member, member: discord.Member) -> bool:
         return (
-            member.id != interaction.guild.owner_id
+            member.id != guild.owner_id
             and member.id != actor.id
             and (
-                interaction.guild.owner_id == actor.id
+                guild.owner_id == actor.id
                 or member.top_role < actor.top_role
             )
         )
+
+    async def execute_kick_command(
+        self,
+        guild: discord.Guild,
+        actor: discord.Member,
+        member: discord.Member,
+        reason: str,
+    ) -> None:
+        if not self._member_hierarchy_ok(guild, actor, member):
+            raise PermissionError("member_hierarchy_denied")
+        bot_member = getattr(guild, "me", None)
+        if bot_member and not member.top_role < bot_member.top_role:
+            raise PermissionError("bot_member_hierarchy_denied")
+        await member.kick(reason=reason)
+        try:
+            await guild.fetch_member(int(member.id))
+        except discord.NotFound:
+            return
+        raise RuntimeError("discord_kick_not_confirmed")
+
+    async def execute_ban_command(
+        self,
+        guild: discord.Guild,
+        actor: discord.Member,
+        member: discord.Member,
+        delete_days: int,
+        reason: str,
+    ) -> None:
+        if not self._member_hierarchy_ok(guild, actor, member):
+            raise PermissionError("member_hierarchy_denied")
+        bot_member = getattr(guild, "me", None)
+        if bot_member and not member.top_role < bot_member.top_role:
+            raise PermissionError("bot_member_hierarchy_denied")
+        await member.ban(delete_message_days=int(delete_days), reason=reason)
+        entry = await guild.fetch_ban(discord.Object(id=int(member.id)))
+        if int(getattr(getattr(entry, "user", None), "id", 0)) != int(member.id):
+            raise RuntimeError("discord_ban_not_confirmed")
 
     @staticmethod
     def _current_voice(interaction: discord.Interaction) -> discord.VoiceChannel | None:
@@ -365,8 +405,12 @@ class SanctionsVoiceCog(commands.Cog):
         if not self._hierarchy_ok(interaction, member):
             return await self._error(interaction, "kick", "لا يمكن تنفيذ الإجراء على هذا العضو.")
         try:
-            await member.kick(reason=reason)
-        except (discord.Forbidden, discord.HTTPException):
+            await self.execute_kick_command(
+                interaction.guild, interaction.user, member, reason
+            )
+        except PermissionError:
+            return await self._error(interaction, "kick", "لا يمكن تنفيذ الإجراء على هذا العضو.")
+        except (discord.Forbidden, discord.HTTPException, RuntimeError):
             return await self._error(interaction, "kick", "فشل الطرد؛ تحقق من ترتيب الرتب وصلاحيات البوت.")
         return await self._send(interaction, "kick", "👢 طرد عضو", f"تم طرد {member.mention}.", category="log_sanctions", color=0xEF4444, fields=[("السبب", reason, False)], values={"member": member.mention, "reason": reason})
 
@@ -378,8 +422,16 @@ class SanctionsVoiceCog(commands.Cog):
         if not self._hierarchy_ok(interaction, member):
             return await self._error(interaction, "ban", "لا يمكن حظر هذا العضو بسبب ترتيب الرتب.")
         try:
-            await member.ban(delete_message_days=int(delete_days), reason=reason)
-        except (discord.Forbidden, discord.HTTPException):
+            await self.execute_ban_command(
+                interaction.guild,
+                interaction.user,
+                member,
+                int(delete_days),
+                reason,
+            )
+        except PermissionError:
+            return await self._error(interaction, "ban", "لا يمكن حظر هذا العضو بسبب ترتيب الرتب.")
+        except (discord.Forbidden, discord.HTTPException, RuntimeError):
             return await self._error(interaction, "ban", "فشل الحظر؛ تحقق من الصلاحيات.")
         return await self._send(interaction, "ban", "🔨 حظر عضو", f"تم حظر {member.mention}.", category="log_sanctions", color=0xB91C1C, fields=[("حذف الرسائل", f"{delete_days} يوم", True), ("السبب", reason, False)], values={"member": member.mention, "reason": reason})
 

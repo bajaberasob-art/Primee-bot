@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from collections import deque
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -67,6 +68,82 @@ class AIProviderUnavailable(RuntimeError):
         super().__init__(message)
         self.retryable = bool(retryable)
         self.status_code = status_code
+
+
+class _BoundedProviderGate:
+    """Bound provider concurrency and reject excess work instead of hoarding tasks."""
+
+    def __init__(
+        self,
+        *,
+        max_active: int = 8,
+        max_waiting: int = 32,
+        queue_timeout: float = 8.0,
+    ):
+        self.max_active = max(1, int(max_active))
+        self.max_waiting = max(0, int(max_waiting))
+        self.queue_timeout = max(0.1, float(queue_timeout))
+        self._active = 0
+        self._waiters: deque[asyncio.Future] = deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        loop = asyncio.get_running_loop()
+        async with self._lock:
+            if self._active < self.max_active and not self._waiters:
+                self._active += 1
+                return
+            if len(self._waiters) >= self.max_waiting:
+                raise AIProviderUnavailable("provider_busy", status_code=503)
+            waiter = loop.create_future()
+            self._waiters.append(waiter)
+
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(waiter),
+                timeout=self.queue_timeout,
+            )
+        except asyncio.TimeoutError as error:
+            await self._remove_waiter(waiter)
+            raise AIProviderUnavailable(
+                "provider_queue_timeout", status_code=503
+            ) from error
+        except asyncio.CancelledError:
+            await self._remove_waiter(waiter)
+            raise
+
+    async def _remove_waiter(self, waiter: asyncio.Future) -> None:
+        async with self._lock:
+            try:
+                self._waiters.remove(waiter)
+            except ValueError:
+                # A slot was handed to this waiter just as it timed out/cancelled.
+                if waiter.done() and not waiter.cancelled():
+                    self._release_locked()
+
+    def _release_locked(self) -> None:
+        while self._waiters:
+            waiter = self._waiters.popleft()
+            if waiter.done():
+                continue
+            waiter.set_result(None)
+            return
+        self._active = max(0, self._active - 1)
+
+    async def release(self) -> None:
+        async with self._lock:
+            self._release_locked()
+
+    @asynccontextmanager
+    async def slot(self):
+        await self.acquire()
+        try:
+            yield
+        finally:
+            await self.release()
+
+
+_PROVIDER_GATE = _BoundedProviderGate()
 
 
 class AIMemoryCandidateRejected(ValueError):
@@ -256,7 +333,8 @@ async def _complete_with_retries(
     timeout_seconds: int,
     retry_count: int,
 ) -> tuple[str, int | None]:
-    retries = max(0, min(int(retry_count), 3))
+    # Keep provider outages from turning one user request into a long retry storm.
+    retries = max(0, min(int(retry_count), 1))
     for attempt in range(retries + 1):
         try:
             return await GEMINI_PROVIDER.complete(
@@ -279,6 +357,9 @@ class AIMemoryLimitReached(RuntimeError):
 
 
 _RATE_BUCKETS: dict[tuple[str, int, int], deque[float]] = {}
+MAX_RATE_BUCKETS = 20000
+RATE_BUCKET_CLEANUP_SECONDS = 60.0
+_RATE_BUCKETS_LAST_CLEANUP = 0.0
 _DISCORD_MEMBER_MENTION = re.compile(r"<@!?\d{15,22}>")
 _DISCORD_ROLE_MENTION = re.compile(r"<@&\d{15,22}>")
 _DISCORD_CHANNEL_MENTION = re.compile(r"<#\d{15,22}>")
@@ -1253,18 +1334,27 @@ def allow_request(
     window_seconds: float = 60,
 ) -> float:
     """Return remaining retry seconds, or 0 when an AI request is allowed."""
+    global _RATE_BUCKETS_LAST_CLEANUP
     now = time.monotonic()
     key = (str(action), int(guild_id), int(actor_id))
-    bucket = _RATE_BUCKETS.setdefault(key, deque())
+    bucket = _RATE_BUCKETS.get(key)
+    if bucket is None:
+        if len(_RATE_BUCKETS) >= MAX_RATE_BUCKETS:
+            if now - _RATE_BUCKETS_LAST_CLEANUP >= RATE_BUCKET_CLEANUP_SECONDS:
+                for stale_key, stale_bucket in list(_RATE_BUCKETS.items()):
+                    if not stale_bucket or now - stale_bucket[-1] > 3600:
+                        _RATE_BUCKETS.pop(stale_key, None)
+                _RATE_BUCKETS_LAST_CLEANUP = now
+            if len(_RATE_BUCKETS) >= MAX_RATE_BUCKETS:
+                # Fail closed for new identities rather than growing memory without
+                # bound or evicting active users' rate-limit history.
+                return max(1.0, float(window_seconds))
+        bucket = _RATE_BUCKETS.setdefault(key, deque())
     while bucket and now - bucket[0] >= window_seconds:
         bucket.popleft()
     if len(bucket) >= limit:
         return max(0.0, window_seconds - (now - bucket[0]))
     bucket.append(now)
-    if len(_RATE_BUCKETS) > 5000:
-        for stale_key, stale_bucket in list(_RATE_BUCKETS.items()):
-            if not stale_bucket or now - stale_bucket[-1] > 3600:
-                _RATE_BUCKETS.pop(stale_key, None)
     return 0.0
 
 
@@ -1796,32 +1886,35 @@ async def generate_response(
     tokens_used = None
     try:
         retry_count = int(provider.get("retry_count", 0))
-        timeout_seconds = int(provider.get("timeout_seconds", 30))
-        try:
-            answer, tokens_used = await _complete_with_retries(
-                session,
-                payload,
-                timeout_seconds=timeout_seconds,
-                retry_count=retry_count,
-            )
-        except AIProviderUnavailable as primary_error:
-            if (
-                primary_error.status_code not in FALLBACK_PROVIDER_STATUSES
-                or payload["model"] == FALLBACK_PROVIDER_MODEL
-            ):
-                raise
-            LOGGER.warning(
-                "[AI] Gemini model %s stayed unavailable; retrying with same-provider model %s.",
-                payload["model"],
-                FALLBACK_PROVIDER_MODEL,
-            )
-            payload["model"] = FALLBACK_PROVIDER_MODEL
-            answer, tokens_used = await _complete_with_retries(
-                session,
-                payload,
-                timeout_seconds=timeout_seconds,
-                retry_count=retry_count,
-            )
+        timeout_seconds = max(
+            3, min(int(provider.get("timeout_seconds", 30)), 30)
+        )
+        async with _PROVIDER_GATE.slot():
+            try:
+                answer, tokens_used = await _complete_with_retries(
+                    session,
+                    payload,
+                    timeout_seconds=timeout_seconds,
+                    retry_count=retry_count,
+                )
+            except AIProviderUnavailable as primary_error:
+                if (
+                    primary_error.status_code not in FALLBACK_PROVIDER_STATUSES
+                    or payload["model"] == FALLBACK_PROVIDER_MODEL
+                ):
+                    raise
+                LOGGER.warning(
+                    "[AI] Gemini model %s stayed unavailable; retrying with same-provider model %s.",
+                    payload["model"],
+                    FALLBACK_PROVIDER_MODEL,
+                )
+                payload["model"] = FALLBACK_PROVIDER_MODEL
+                answer, tokens_used = await _complete_with_retries(
+                    session,
+                    payload,
+                    timeout_seconds=timeout_seconds,
+                    retry_count=0,
+                )
     except (aiohttp.ClientError, asyncio.TimeoutError) as error:
         if guild_id is not None:
             await record_audit(

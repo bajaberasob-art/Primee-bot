@@ -475,6 +475,21 @@ class Moderation(commands.Cog):
         await self.send_log(guild, embed)
         return {"ok": True, "guild_id": int(guild_id), "user_id": int(user_id)}
 
+    async def execute_timeout_command(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        minutes: int,
+        reason: str,
+    ) -> datetime.datetime:
+        expires_at = discord.utils.utcnow() + datetime.timedelta(minutes=int(minutes))
+        await member.timeout(expires_at, reason=reason)
+        refreshed = await guild.fetch_member(int(member.id))
+        applied_until = getattr(refreshed, "communication_disabled_until", None)
+        if applied_until is None or applied_until < expires_at - datetime.timedelta(seconds=10):
+            raise RuntimeError("discord_timeout_not_confirmed")
+        return expires_at
+
     @app_commands.command(name="timeout", description="كتم عضو بالدقائق")
     @app_commands.checks.has_permissions(moderate_members=True)
     async def timeout(
@@ -495,10 +510,8 @@ class Moderation(commands.Cog):
                 ephemeral=True,
             )
         try:
-            expires_at = discord.utils.utcnow() + datetime.timedelta(minutes=minutes)
-            await member.timeout(
-                expires_at,
-                reason=reason,
+            expires_at = await self.execute_timeout_command(
+                itx.guild, member, minutes, reason
             )
             emb = discord.Embed(
                 title="🔇 كتم عضو",
@@ -513,7 +526,7 @@ class Moderation(commands.Cog):
                     itx.guild, member, itx.user, minutes, reason,
                     expires_at.strftime("%Y-%m-%d %H:%M UTC"),
                 )
-        except (discord.Forbidden, discord.HTTPException):
+        except (discord.Forbidden, discord.HTTPException, RuntimeError):
             await itx.response.send_message(
                 "❌ فشل الكتم؛ تأكد من صلاحية ورتبة البوت.",
                 ephemeral=True,
