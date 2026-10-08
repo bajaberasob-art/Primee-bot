@@ -329,6 +329,7 @@ class EnterpriseBot(commands.Bot):
             "cogs.tournaments",
             "cogs.gaming",
             "cogs.community",
+            "cogs.announcement_reactions",
             "cogs.ai_tools",
         ]
 

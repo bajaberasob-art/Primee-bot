@@ -884,17 +884,19 @@ def pwa_svg() -> str:
 
 
 def service_worker_source() -> str:
-    return """const CACHE = "prime-dashboard-shell-v24";
+    return """const CACHE = "prime-dashboard-shell-v26";
 const STATIC = [
   "./",
   "./static/app.css",
   "./static/ai-control.css?v=prime-ai-workspace-6",
   "./static/visual-refresh.css?v=visual-refresh-2",
   "./static/subscriptions.css?v=subs-1",
+  "./static/announcement-space.css?v=announcements-2",
+  "./static/announcement-space.js?v=announcements-1",
   "./static/leveling-card-assets.css?v=phase7",
   "./static/ai-control.js?v=prime-ai-workspace-6",
   "./static/ai-magic-island.js?v=prime-ai-workspace-6",
-  "./static/app.js?v=prime-subscriptions-dashboard-1",
+  "./static/app.js?v=prime-announcements-dashboard-1",
   "./manifest.json",
   "./icon.svg",
   "./icon-192.png",
@@ -1581,6 +1583,11 @@ async def api_guild_stats(req):
             latency_series=metrics,
         )
     )
+
+
+from announcement_dashboard import register_routes as register_announcement_routes
+
+register_announcement_routes(routes)
 
 
 def _subscription_actor_id(session: dict) -> int:
@@ -5702,6 +5709,8 @@ async def static_asset(req):
         "ai-control.js": "application/javascript",
         "ai-magic-island.js": "application/javascript",
         "subscriptions.css": "text/css",
+        "announcement-space.css": "text/css",
+        "announcement-space.js": "application/javascript",
         "app.js": "application/javascript",
     }
     if name not in types:

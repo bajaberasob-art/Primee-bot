@@ -2323,6 +2323,19 @@ async def init_db() -> None:
                 );
             """)
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS announcement_reaction_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    channel_id TEXT,
+                    emoji_ids TEXT NOT NULL DEFAULT '[]',
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    activated_at REAL,
+                    last_error TEXT,
+                    last_error_at REAL,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS broadcast_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     guild_id INTEGER,

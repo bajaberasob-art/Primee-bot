@@ -673,6 +673,7 @@
     subscriptions: { label: "الاشتراكات", icon: "◈", hint: "Subscription Control" },
     clan: { label: "الكلان والتنافس", icon: "♛", hint: "Clan Ops" },
     broadcast: { label: "استوديو البث", icon: "✦", hint: "Broadcast Studio" },
+    announcements: { label: "📢 المساحة الإعلانية", icon: "📢", hint: "Auto Reactions" },
     commands: { label: "الأوامر والأتمتة", icon: "⌘", hint: "Commands" },
     onboarding: { label: "الترحيب والأدوار", icon: "✦", hint: "Onboarding" },
     security: { label: "الحماية", icon: "◈", hint: "Security" },
@@ -830,6 +831,7 @@
       navButton("subscriptions"),
       navButton("clan"),
       navButton("broadcast"),
+      navButton("announcements"),
       navButton("security"),
       navButton("moderation"),
       navButton("analytics"),
@@ -9735,6 +9737,10 @@
   function renderPage() {
     const main = $("#main");
     disposeSubscriptionMagic();
+    if (typeof state.announcementCleanup === "function") {
+      state.announcementCleanup();
+      state.announcementCleanup = null;
+    }
     if (typeof state.aiControlCleanup === "function") {
       state.aiControlCleanup();
       state.aiControlCleanup = null;
@@ -9767,6 +9773,17 @@
     else if (view === "subscriptions") main.append(subscriptionDashboardView());
     else if (view === "clan") main.append(clanOpsView());
     else if (view === "broadcast") main.append(broadcastView());
+    else if (view === "announcements") {
+      const host = el("section", { id: "view-announcements" });
+      main.append(host);
+      if (state.guild && window.PrimeAnnouncements) {
+        state.announcementCleanup = window.PrimeAnnouncements.mount(host, {
+          guildId: String(state.guild.id), api, writeApi, readJson, toast,
+        });
+      } else {
+        host.append(el("p", { class: "notice", text: "اختر سيرفرًا لفتح المساحة الإعلانية." }));
+      }
+    }
     else if (view === "onboarding") main.append(onboardingView());
     else if (view === "security") main.append(securityView());
     else if (view === "analytics") main.append(analyticsView());
