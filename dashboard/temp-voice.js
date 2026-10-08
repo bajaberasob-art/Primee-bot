@@ -102,7 +102,11 @@
         conflictConfig = null;
         remoteRevision = null;
         draftBanner = data.banner || null;
-      } else if (changed && dirty) conflict = true;
+      } else if (changed && dirty) {
+        conflict = true;
+        conflictConfig = data.config;
+        remoteRevision = data.revision;
+      }
     }
     async function fetchState(initial) {
       if (disposed || writing || uploading) return;
@@ -115,6 +119,7 @@
         if (conflict) {
           status.className = "tv-alert is-warn";
           status.textContent = "تغيّرت الإعدادات من مكان آخر. بقيت مسودتك محفوظة، ولن تُستبدل تلقائيًا.";
+          showConflict();
         }
       } catch (error) {
         if (!snap) issue = error.message;
@@ -181,7 +186,7 @@
       return panel;
     }
     function field(label, value, type, key, attrs) {
-      var input = node("input", Object.assign({ type: type || "text", value: value == null ? "" : value,
+      var settings = Object.assign({ type: type || "text", value: value == null ? "" : value,
         oninput: function (event) {
           var val = type === "number" ? Number(event.target.value) : event.target.value;
           set(key, val);
@@ -190,7 +195,9 @@
             var target = preview.querySelector(key === "panel_title" ? "strong" : "p");
             if (target) target.textContent = event.target.value;
           }
-        } }, attrs || {}));
+        } }, attrs || {});
+      var input = node(settings.multiline ? "textarea" : "input", settings);
+      if (settings.multiline) input.value = value == null ? "" : value;
       return node("label", { class: "tv-field" }, node("span", { text: label }), input);
     }
     function selectField(label, optionsList, current, onpick, placeholder) {
@@ -362,13 +369,13 @@
         field("فترة الانتظار (ثانية)", cfg.cooldown, "number", "cooldown", { min: 0, max: 3600 }),
         selectField("الخصوصية الافتراضية", [{ id: "public", name: "عام — الكل يدخل" }, { id: "private", name: "خاص — المالك والموثوقون" }],
           cfg.privacy, function (value) { set("privacy", value); }));
-      defaults.append(fields2, field("رسالة الترحيب", cfg.welcome_template, "text", "welcome_template", { maxLength: 1500 }));
+      defaults.append(fields2, field("رسالة الترحيب", cfg.welcome_template, "text", "welcome_template", { maxLength: 1500, multiline: true, rows: 3 }));
       root.append(defaults);
 
       var style = section("الواجهة والألوان والبانر", "معاينة محلية تُحدّث قبل الحفظ؛ استعمل رابط HTTPS لصورة عامة أو ارفع ملف صورة.");
       var styleGrid = node("div", { class: "tv-grid" },
         field("عنوان البانل", cfg.panel_title, "text", "panel_title", { maxLength: 256 }),
-        field("وصف البانل", cfg.panel_description, "text", "panel_description", { maxLength: 3500 }),
+        field("وصف البانل", cfg.panel_description, "text", "panel_description", { maxLength: 3500, multiline: true, rows: 4 }),
         node("label", { class: "tv-field" }, node("span", { text: "لون شريط الحاوية" }),
           node("span", { class: "tv-color" },
             node("input", { type: "color", value: cfg.embed_color,
