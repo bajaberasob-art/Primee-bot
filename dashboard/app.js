@@ -674,6 +674,7 @@
     clan: { label: "الكلان والتنافس", icon: "♛", hint: "Clan Ops" },
     broadcast: { label: "استوديو البث", icon: "✦", hint: "Broadcast Studio" },
     announcements: { label: "📢 المساحة الإعلانية", icon: "📢", hint: "Auto Reactions" },
+    tempVoice: { label: "الرومات المؤقتة", icon: "◉", hint: "Temporary Voice" },
     commands: { label: "الأوامر والأتمتة", icon: "⌘", hint: "Commands" },
     onboarding: { label: "الترحيب والأدوار", icon: "✦", hint: "Onboarding" },
     security: { label: "الحماية", icon: "◈", hint: "Security" },
@@ -832,6 +833,7 @@
       navButton("clan"),
       navButton("broadcast"),
       navButton("announcements"),
+      navButton("tempVoice"),
       navButton("security"),
       navButton("moderation"),
       navButton("analytics"),
@@ -847,7 +849,7 @@
     const moreButton = el(
       "button",
       {
-         class: `nav-item ${["onboarding", "gaming", "subscriptions", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "talk", "appearance", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
+         class: `nav-item ${["onboarding", "gaming", "subscriptions", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "talk", "appearance", "settings", "system", "tempVoice"].includes(state.activeView) ? "active" : ""}`,
         type: "button",
         "aria-expanded": "false",
         onClick: () => {
@@ -9741,6 +9743,10 @@
       state.announcementCleanup();
       state.announcementCleanup = null;
     }
+    if (typeof state.tempVoiceCleanup === "function") {
+      state.tempVoiceCleanup();
+      state.tempVoiceCleanup = null;
+    }
     if (typeof state.aiControlCleanup === "function") {
       state.aiControlCleanup();
       state.aiControlCleanup = null;
@@ -9783,6 +9789,17 @@
         });
       } else {
         host.append(el("p", { class: "notice", text: "اختر سيرفرًا لفتح المساحة الإعلانية." }));
+      }
+    }
+    else if (view === "tempVoice") {
+      const host = el("section", { id: "view-temp-voice" });
+      main.append(host);
+      if (state.guild && window.PrimeTempVoice) {
+        state.tempVoiceCleanup = window.PrimeTempVoice.mount(host, {
+          guildId: String(state.guild.id), api, writeApi, toast, getCsrf: () => state.session?.csrf || "", refreshSession,
+        });
+      } else {
+        host.append(el("p", { class: "notice", text: "اختر سيرفرًا لفتح إعدادات الرومات المؤقتة." }));
       }
     }
     else if (view === "onboarding") main.append(onboardingView());
