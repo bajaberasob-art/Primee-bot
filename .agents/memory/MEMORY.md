@@ -1,3 +1,4 @@
 - [Git review branch](git-review-branch.md) — Keep GitHub edits on a review branch; leave `main` untouched unless the user explicitly asks.
 - [Python test setup](python-test-runtime.md) — If base Nix Python lacks pip or project packages, use a supported Python Tools module and Replit package management.
 - [PRIME AI authorization scope](prime-ai-authorization-scope.md) — Improve interpretation, never bypass Discord permissions or PRIME policy.
+- [PRIME management expansion](prime-management-expansion.md) — Extend existing bot, dashboard, and database systems additively; preserve current features and data.
