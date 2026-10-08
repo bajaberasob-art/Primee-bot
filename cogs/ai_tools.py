@@ -163,6 +163,120 @@ class PrimeAIModerationReviewView(discord.ui.View):
         await self.cog.review_moderation_finding(interaction, self.event_id)
 
 
+def _parse_private_memory_command(prompt: str) -> dict | None:
+    value = re.sub(r"[\u064b-\u065f\u0670]", "", str(prompt or "")).strip()
+    compact = re.sub(r"\s+", " ", value).casefold()
+    if re.fullmatch(
+        r"(?:امسح|احذف)\s+(?:كل|جميع)\s+(?:ذاكرتي|ذكرياتي|بياناتي)"
+        r"|forget all my (?:memories|data)",
+        compact,
+        re.IGNORECASE,
+    ):
+        return {"action": "forget"}
+    listing = re.fullmatch(
+        r"(?:اعرض|أظهر|اظهر|قائمة)\s+(?:لي\s+)?(?:ذاكرتي|ذكرياتي)"
+        r"|(?:show|list|view)\s+my\s+memories"
+        r"|what do you remember about me",
+        compact,
+        re.IGNORECASE,
+    )
+    if listing:
+        return {"action": "list", "page": 1}
+    listing_page = re.fullmatch(
+        r"(?:اعرض|أظهر|اظهر|قائمة)\s+(?:لي\s+)?(?:ذاكرتي|ذكرياتي)\s+"
+        r"(?:صفحة\s*)?([0-9]{1,4})"
+        r"|(?:show|list|view)\s+my\s+memories\s+([0-9]{1,4})",
+        compact,
+        re.IGNORECASE,
+    )
+    if listing_page:
+        page = int(listing_page.group(1) or listing_page.group(2))
+        return {"action": "list", "page": max(1, min(page, 1000))}
+    edit = re.fullmatch(
+        r"(?:عدّل|عدل|حدّث|حدث|edit|update)\s+"
+        r"(?:الذاكرة|ذاكرة|memory)\s*(?:رقم\s*)?([0-9]+)\s*[:：]\s*(.+)",
+        value,
+        re.IGNORECASE,
+    )
+    if edit:
+        return {
+            "action": "edit",
+            "memory_id": int(edit.group(1)),
+            "content": edit.group(2).strip(),
+        }
+    delete = re.fullmatch(
+        r"(?:احذف|امسح|delete|remove)\s+"
+        r"(?:الذاكرة|ذاكرة|memory)\s*(?:رقم\s*)?([0-9]+)",
+        value,
+        re.IGNORECASE,
+    )
+    if delete:
+        return {"action": "delete", "memory_id": int(delete.group(1))}
+    return None
+
+
+class PrimeAIForgetDataView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(timeout=120)
+        self.guild_id = int(guild_id)
+        self.user_id = int(user_id)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if int(interaction.user.id) != self.user_id:
+            await interaction.response.send_message(
+                "هذا التأكيد مخصص لصاحبه فقط.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(
+        label="حذف بياناتي",
+        style=discord.ButtonStyle.danger,
+        custom_id="prime-ai:forget-data:confirm",
+    )
+    async def confirm(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        prime_ai_runtime.CONVERSATION_STATE.clear_user(
+            self.guild_id,
+            self.user_id,
+        )
+        result = await prime_ai_service.forget_user_data(
+            self.guild_id,
+            self.user_id,
+        )
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content=(
+                "حُذفت بيانات PRIME AI الشخصية: "
+                f"{result['memories']} ذاكرة و{result['profile']} ملف مستخدم. "
+                "ومُسح سياقك المؤقت في هذا الخادم."
+            ),
+            view=self,
+        )
+
+    @discord.ui.button(
+        label="إلغاء",
+        style=discord.ButtonStyle.secondary,
+        custom_id="prime-ai:forget-data:cancel",
+    )
+    async def cancel(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content="أُلغيت العملية؛ لم تُحذف أي بيانات.",
+            view=self,
+        )
+
+
 class PrimeAIMemoryCandidateView(discord.ui.View):
     """Persistent private approval for a user-owned AI memory candidate."""
 
@@ -450,6 +564,12 @@ class AITools(commands.Cog):
                     await prime_ai_control.prune_expired_data(guild.id, snapshot["config"])
                 except Exception:
                     LOGGER.exception("[AI] Retention cleanup failed for guild %s.", guild.id)
+            try:
+                await prime_ai_control.prune_expired_data(
+                    0, prime_ai_control.DEFAULT_CONTROL_SETTINGS
+                )
+            except Exception:
+                LOGGER.exception("[AI] Global AI retention cleanup failed.")
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(
@@ -657,6 +777,112 @@ class AITools(commands.Cog):
             ephemeral=True,
         )
 
+    async def _handle_private_memory_command(
+        self,
+        interaction: discord.Interaction,
+        guild,
+        question: str,
+    ) -> bool:
+        request = _parse_private_memory_command(question)
+        if request is None:
+            return False
+        action = request["action"]
+        user_id = int(interaction.user.id)
+        if action == "forget":
+            await interaction.followup.send(
+                "سيؤدي هذا إلى حذف ذكريات PRIME AI الخاصة بك وملف تفضيلاتك "
+                "في هذا الخادم، إضافة إلى سياق محادثاتك المؤقت. هل تريد المتابعة؟",
+                view=PrimeAIForgetDataView(guild.id, user_id),
+                ephemeral=True,
+            )
+            return True
+        if action == "list":
+            page = int(request.get("page", 1))
+            memories = await prime_ai_service.list_user_memories(
+                guild.id,
+                user_id,
+                limit=8,
+                offset=(page - 1) * 8,
+            )
+            embed = discord.Embed(
+                title="ذكريات PRIME AI الخاصة بك",
+                color=0x5865F2,
+            )
+            if not memories:
+                embed.description = (
+                    "لا توجد ذكريات شخصية معتمدة محفوظة."
+                    if page == 1
+                    else "لا توجد ذكريات إضافية في هذه الصفحة."
+                )
+            else:
+                lines = []
+                for item in memories:
+                    if item["pinned"]:
+                        expiry = " · دائمة ومثبّتة"
+                    elif item["expires_at"]:
+                        expired = str(item["expires_at"]) <= prime_ai_control.timestamp()
+                        expiry = (
+                            f" · {'منتهية' if expired else 'تنتهي'} "
+                            f"{str(item['expires_at'])[:10]}"
+                        )
+                    else:
+                        expiry = " · دون تاريخ انتهاء"
+                    status = "" if item["enabled"] else " · متوقفة"
+                    lines.append(
+                        f"`{item['id']}` — {item['content'][:350]}{expiry}{status}"
+                    )
+                embed.description = "\n".join(lines)[:4000]
+                embed.set_footer(
+                    text=(
+                        f"الصفحة {page} · اعرض ذاكرتي {page + 1} للمتابعة · "
+                        "للتعديل: عدّل ذاكرة <ID>: النص الجديد · للحذف: احذف الذاكرة <ID>"
+                    )
+                )
+            await interaction.followup.send(
+                embed=embed,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+        if action == "delete":
+            deleted = await prime_ai_service.delete_user_memory(
+                guild.id,
+                user_id,
+                request["memory_id"],
+            )
+            message = (
+                "حُذفت الذاكرة الشخصية."
+                if deleted
+                else "لم أجد ذاكرة بهذا الرقم ضمن ذكرياتك الشخصية."
+            )
+        else:
+            try:
+                updated = await prime_ai_service.edit_user_memory(
+                    guild.id,
+                    user_id,
+                    request["memory_id"],
+                    request["content"],
+                )
+            except ValueError as error:
+                code = str(error)
+                message = (
+                    "لا يمكن حفظ بيانات سرية أو مالية أو شخصية حساسة."
+                    if code == "sensitive_memory_rejected"
+                    else "محتوى الذاكرة غير صالح أو يتجاوز الحد المسموح."
+                )
+            else:
+                message = (
+                    "تم تعديل ذاكرتك الشخصية."
+                    if updated
+                    else "لم أجد ذاكرة بهذا الرقم ضمن ذكرياتك الشخصية."
+                )
+        await interaction.followup.send(
+            message,
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        return True
+
     async def _generate_user_response(
         self,
         guild,
@@ -714,6 +940,7 @@ class AITools(commands.Cog):
                 if effective_history_limit
                 else []
             )
+            context_epoch = store.user_epoch(guild.id, actor.id)
             answer = await generate(conversation)
 
             if prime_ai_intelligence.response_repeats_recent(answer, conversation):
@@ -737,20 +964,22 @@ class AITools(commands.Cog):
                 question,
                 answer,
                 max_messages=effective_history_limit,
+                expected_epoch=context_epoch,
             )
-            try:
-                # Keep the durable profile privacy-safe: persist only explicit,
-                # low-risk preferences and a compact intent label, never raw chat text.
-                await prime_ai_intelligence.update_user_profile(
-                    guild.id,
-                    actor.id,
-                    channel_id=channel_id,
-                    intent=str((context or {}).get("intent") or ""),
-                    topic=prime_ai_intelligence._extract_topic(question),
-                    preferences=prime_ai_intelligence.extract_preference_signals(question),
-                )
-            except Exception:
-                LOGGER.exception("[AI] Could not persist PRIME user profile.")
+            if store.user_epoch(guild.id, actor.id) == context_epoch:
+                try:
+                    # Keep the durable profile privacy-safe: persist only explicit,
+                    # low-risk preferences and compact metadata, never raw chat text.
+                    await prime_ai_intelligence.update_user_profile(
+                        guild.id,
+                        actor.id,
+                        channel_id=channel_id,
+                        intent=str((context or {}).get("intent") or ""),
+                        topic=prime_ai_intelligence._extract_topic(question),
+                        preferences=prime_ai_intelligence.extract_preference_signals(question),
+                    )
+                except Exception:
+                    LOGGER.exception("[AI] Could not persist PRIME user profile.")
             return answer
 
     @staticmethod
@@ -879,6 +1108,14 @@ class AITools(commands.Cog):
         await itx.response.defer(thinking=True)
 
         try:
+            if (
+                guild is not None
+                and selected_mode in {"CHAT", "ASSISTANT"}
+                and await self._handle_private_memory_command(
+                    itx, guild, question
+                )
+            ):
+                return
             blocked_request = prime_ai_runtime.detect_skill_request(question)
             if blocked_request and blocked_request.get("intent") == "SERVER_ACTION":
                 if guild is None:
@@ -1937,6 +2174,8 @@ class AITools(commands.Cog):
             return
         natural_settings = config.get("natural_commands", {})
         if not natural_settings.get("enabled", True):
+            return
+        if not prime_ai_runtime.talk_channel_allows(config, message.channel.id):
             return
         mode = str(config.get("mode", "CHAT")).upper()
         if mode not in {"CHAT", "ASSISTANT"}:

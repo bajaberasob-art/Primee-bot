@@ -489,7 +489,11 @@
       expiry.value = expiryDays === null || expiryDays === undefined ? "" : String(expiryDays);
       expiry.dataset.localField = "memory-expiry";
       expiry.disabled = state.memorySaving || (!canCreateMemory && !state.editingMemory);
-      const expiryField = controlField("انتهاء بعد أيام", expiry, "استخدم 0 للاحتفاظ بها دون تاريخ انتهاء.");
+      const expiryField = controlField(
+        "انتهاء بعد أيام",
+        expiry,
+        "استخدم 0 لتثبيتها دون تاريخ انتهاء؛ الذاكرة المثبّتة مستثناة من الحذف الآلي بسبب العمر.",
+      );
 
       const enabledLabel = el("label", "prime-ai-control-toggle");
       const enabledCopy = el("span", "prime-ai-control-toggle-copy");
@@ -571,6 +575,9 @@
                 ? "مصدرها اقتراح وافق عليه المستخدم"
                 : "أضيفت إدارياً",
             ));
+          }
+          if (memory.pinned) {
+            meta.append(el("span", "", "مثبّتة — لا تنتهي"));
           }
           meta.append(el("span", "", memory.enabled === false || memory.enabled === 0 ? "متوقفة" : "مفعّلة"));
           if (memory.expires_at) meta.append(el("span", "", `تنتهي ${readableDate(memory.expires_at)}`));
@@ -1020,10 +1027,22 @@
         true,
       );
       const naturalGrid = el("div", "prime-ai-control-grid");
+      const talkChannel = cfg.talk_channel || {};
       naturalGrid.append(
         controlToggle("natural_commands.enabled", "تفعيل الأوامر الطبيعية", natural.enabled),
         controlToggle("activation.mention", "التفعيل عند منشن PRIME", cfg.activation && cfg.activation.mention),
         controlToggle("activation.reply", "التفعيل عند الرد على PRIME", cfg.activation && cfg.activation.reply),
+        controlToggle(
+          "talk_channel.enabled",
+          "حصر الردود الطبيعية في قناة Talk",
+          talkChannel.enabled,
+        ),
+        controlSelect(
+          "talk_channel.channel_id",
+          "قناة Talk",
+          talkChannel.channel_id || "",
+          channels,
+        ),
         controlSelect("access.allowed_roles", "رتب PRIME AI المسموحة", cfg.access && cfg.access.allowed_roles, roles, true),
         controlToggle("response.reply_behavior", "الرد مع اقتباس الرسالة", cfg.response && cfg.response.reply_behavior),
         controlSelect("natural_commands.clarification_behavior", "التعامل مع الأسماء المتشابهة", natural.clarification_behavior, [
@@ -1039,7 +1058,7 @@
       naturalSection.content.append(el(
         "p",
         "prime-ai-help",
-        "إعدادات القنوات والرتب تطبّق أيضاً على /ask_ai عبر سياسة الوصول الموحدة.",
+        "قناة Talk تقيّد رسائل المحادثة الطبيعية بها فقط؛ لا تفعّل الرد على الرسائل غير الموجّهة إلى PRIME، وتبقى أوامر Slash خاضعة لقائمة قنوات PRIME AI.",
       ));
       addControlSection("modes", naturalSection);
 

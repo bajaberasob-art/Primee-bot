@@ -255,6 +255,10 @@ DEFAULT_CONTROL_SETTINGS: dict[str, Any] = {
         "clarification_behavior": "ask",
         "unknown_command_behavior": "respond",
     },
+    "talk_channel": {
+        "enabled": False,
+        "channel_id": "",
+    },
     "actions": ACTION_POLICY_DEFAULTS,
     "safety": {
         "enabled": True,
@@ -624,6 +628,22 @@ def normalize_control_settings(
         or natural.get("unknown_command_behavior") not in {"respond", "ignore"}
     ):
         raise ValueError("invalid_natural_commands")
+    talk_channel = value["talk_channel"]
+    if (
+        not isinstance(talk_channel, dict)
+        or not isinstance(talk_channel.get("enabled"), bool)
+    ):
+        raise ValueError("invalid_talk_channel")
+    talk_channel_id = str(talk_channel.get("channel_id", "") or "")
+    if talk_channel_id and (
+        not talk_channel_id.isascii()
+        or not talk_channel_id.isdigit()
+        or not 15 <= len(talk_channel_id) <= 22
+    ):
+        raise ValueError("invalid_talk_channel")
+    if talk_channel["enabled"] and not talk_channel_id:
+        raise ValueError("talk_channel_required")
+    talk_channel["channel_id"] = talk_channel_id
     actions = value["actions"]
     if not isinstance(actions, dict) or set(actions) != set(ACTION_REGISTRY):
         raise ValueError("invalid_actions")
@@ -1262,6 +1282,7 @@ async def save_memory(
         scope_id = ""
     gid, actor = int(guild_id), int(actor_id)
     created = timestamp()
+    pinned = expires_in_days == 0
     expires = timestamp(now_utc() + timedelta(days=expires_in_days)) if expires_in_days else None
     async with database.connect(aiosqlite.Row) as db:
         try:
@@ -1278,23 +1299,24 @@ async def save_memory(
                 cur = await db.execute(
                     "INSERT INTO prime_ai_memories "
                     "(guild_id, content, created_by, created_at, scope, scope_id, enabled, expires_at, "
-                    "updated_at, source, confidence, status, owner_user_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ADMIN', 1.0, 'ACTIVE', NULL)",
+                    "updated_at, source, confidence, status, owner_user_id, pinned) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ADMIN', 1.0, 'ACTIVE', NULL, ?)",
                     (
                         gid, value, actor, created, scope, str(scope_id), int(enabled),
-                        expires, created,
+                        expires, created, int(pinned),
                     ),
                 )
                 mid = int(cur.lastrowid)
             else:
                 cur = await db.execute(
                     "UPDATE prime_ai_memories SET guild_id=?, content=?, scope=?, scope_id=?, enabled=?, "
-                    "expires_at=?, updated_at=?, source='ADMIN', confidence=1.0, "
+                    "expires_at=?, updated_at=?, source='ADMIN', confidence=1.0, pinned=?, "
                     "status='ACTIVE', owner_user_id=NULL "
                     "WHERE guild_id=? AND memory_id=? AND scope != 'USER' "
                     "AND source != 'AI_CANDIDATE'",
                     (
                         gid, value, scope, str(scope_id), int(enabled), expires, created,
+                        int(pinned),
                         int(source_guild_id if source_guild_id is not None else gid),
                         int(memory_id),
                     ),
@@ -1312,6 +1334,7 @@ async def save_memory(
         "scope": scope,
         "scope_id": str(scope_id),
         "enabled": enabled,
+        "pinned": pinned,
         "expires_at": expires,
         "created_by": str(actor),
         "created_at": created,
@@ -1407,11 +1430,11 @@ async def create_memory_candidate(
             cur = await db.execute(
                 "INSERT INTO prime_ai_memories "
                 "(guild_id, content, created_by, created_at, scope, scope_id, enabled, expires_at, "
-                "updated_at, source, confidence, status, owner_user_id, candidate_expires_at) "
-                "VALUES (?, ?, ?, ?, 'USER', ?, 0, ?, ?, 'AI_CANDIDATE', ?, 'PENDING', ?, ?)",
+                "updated_at, source, confidence, status, owner_user_id, candidate_expires_at, pinned) "
+                "VALUES (?, ?, ?, ?, 'USER', ?, 0, ?, ?, 'AI_CANDIDATE', ?, 'PENDING', ?, ?, ?)",
                 (
                     gid, value, actor, created, str(actor), expires, created,
-                    float(confidence), actor, candidate_expires,
+                    float(confidence), actor, candidate_expires, int(expires_in_days == 0),
                 ),
             )
             memory_id = int(cur.lastrowid)
@@ -1425,6 +1448,7 @@ async def create_memory_candidate(
         "scope": "USER",
         "scope_id": str(actor),
         "enabled": False,
+        "pinned": expires_in_days == 0,
         "expires_at": expires,
         "created_by": str(actor),
         "created_at": created,
@@ -2004,7 +2028,6 @@ async def prune_expired_data(guild_id: int, settings: dict) -> dict:
         )
         deleted["expired_memory_candidates"] = max(0, int(cur.rowcount))
         for key, table in (
-            ("memory_days", "prime_ai_memories"),
             ("audit_days", "prime_ai_audit"),
             ("moderation_days", "prime_ai_moderation_events"),
         ):
@@ -2017,6 +2040,16 @@ async def prune_expired_data(guild_id: int, settings: dict) -> dict:
                 (int(guild_id), f"-{days} days"),
             )
             deleted[key] = max(0, int(cur.rowcount))
+        memory_days = int(retention.get("memory_days", 0) or 0)
+        if memory_days > 0:
+            cur = await db.execute(
+                "DELETE FROM prime_ai_memories WHERE guild_id=? AND pinned=0 "
+                "AND created_at < datetime('now', ?)",
+                (int(guild_id), f"-{memory_days} days"),
+            )
+            deleted["memory_days"] = max(0, int(cur.rowcount))
+        else:
+            deleted["memory_days"] = 0
         cur = await db.execute(
             "DELETE FROM prime_ai_memories WHERE guild_id=? AND expires_at IS NOT NULL AND expires_at <= ?",
             (int(guild_id), now),

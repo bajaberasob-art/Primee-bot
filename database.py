@@ -779,7 +779,8 @@ async def init_db() -> None:
                     status TEXT NOT NULL DEFAULT 'ACTIVE',
                     owner_user_id INTEGER,
                     candidate_expires_at TEXT,
-                    confirmation_message_id INTEGER
+                    confirmation_message_id INTEGER,
+                    pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1))
                 );
             """)
             # Additive compatibility for workspaces that already have the
@@ -800,6 +801,7 @@ async def init_db() -> None:
                 ("owner_user_id", "INTEGER"),
                 ("candidate_expires_at", "TEXT"),
                 ("confirmation_message_id", "INTEGER"),
+                ("pinned", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 if column not in memory_columns:
                     await db.execute(
@@ -808,6 +810,10 @@ async def init_db() -> None:
             await db.execute(
                 "UPDATE prime_ai_memories SET updated_at = created_at "
                 "WHERE updated_at IS NULL OR updated_at = ''"
+            )
+            await db.execute(
+                "UPDATE prime_ai_memories SET pinned=1 "
+                "WHERE expires_at IS NULL AND status='ACTIVE' AND pinned=0"
             )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_prime_ai_memories_owner_status "

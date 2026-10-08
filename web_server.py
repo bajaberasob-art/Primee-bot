@@ -4858,6 +4858,12 @@ def _validate_prime_ai_references(guild, config: dict) -> dict:
     for role_id in config.get("role_overrides", {}):
         if str(role_id) not in role_ids:
             raise ValueError("invalid_role_override")
+    talk_channel_id = str(config.get("talk_channel", {}).get("channel_id", "") or "")
+    if talk_channel_id:
+        if talk_channel_id not in channel_ids or not isinstance(
+            channels[talk_channel_id], (discord.TextChannel, discord.Thread)
+        ):
+            raise ValueError("invalid_talk_channel")
     moderation_ids = config.get("moderation", {}).get("channel_ids", [])
     if any(str(value) not in channel_ids for value in moderation_ids):
         raise ValueError("invalid_moderation_channels")

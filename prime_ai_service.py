@@ -431,7 +431,7 @@ async def list_memories(
     async with database.connect(aiosqlite.Row) as db:
         async with db.execute(
             "SELECT memory_id, content, created_by, created_at, scope, scope_id, "
-            "enabled, expires_at, updated_at, source, confidence, status, owner_user_id "
+            "enabled, expires_at, updated_at, source, confidence, status, owner_user_id, pinned "
             "FROM prime_ai_memories WHERE "
             + " AND ".join(clauses)
             + " ORDER BY memory_id DESC LIMIT ?",
@@ -445,6 +445,7 @@ async def list_memories(
             "scope": row["scope"],
             "scope_id": str(row["scope_id"] or ""),
             "enabled": bool(row["enabled"]),
+            "pinned": bool(row["pinned"]),
             "expires_at": row["expires_at"],
             "created_by": str(row["created_by"]),
             "created_at": row["created_at"],
@@ -558,6 +559,144 @@ async def list_context_memories(
             reverse=True,
         )
     return memories[:limit]
+
+
+async def list_user_memories(
+    guild_id: int,
+    user_id: int,
+    *,
+    limit: int = 8,
+    offset: int = 0,
+) -> list[dict]:
+    """List only this member's approved private memories."""
+    safe_limit = max(1, min(int(limit), 20))
+    safe_offset = max(0, min(int(offset), 10000))
+    async with database.connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT memory_id, content, created_at, updated_at, expires_at, pinned, enabled "
+            "FROM prime_ai_memories WHERE guild_id=? AND scope='USER' "
+            "AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=? "
+            "AND status='ACTIVE' "
+            "ORDER BY memory_id DESC LIMIT ? OFFSET ?",
+            (int(guild_id), int(user_id), safe_limit, safe_offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [
+        {
+            "id": int(row["memory_id"]),
+            "content": str(row["content"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "expires_at": row["expires_at"],
+            "pinned": bool(row["pinned"]),
+            "enabled": bool(row["enabled"]),
+        }
+        for row in rows
+    ]
+
+
+async def edit_user_memory(
+    guild_id: int,
+    user_id: int,
+    memory_id: int,
+    content: str,
+) -> bool:
+    value = prime_ai_control.validate_memory_content(
+        content, MAX_MEMORY_LENGTH
+    )
+    async with database.connect() as db:
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "UPDATE prime_ai_memories SET content=?, updated_at=? "
+                "WHERE guild_id=? AND memory_id=? AND scope='USER' "
+                "AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=? "
+                "AND status='ACTIVE'",
+                (
+                    value,
+                    prime_ai_control.timestamp(),
+                    int(guild_id),
+                    int(memory_id),
+                    int(user_id),
+                ),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+    if cursor.rowcount:
+        await record_audit(
+            guild_id,
+            user_id,
+            "تعديل ذاكرة شخصية لـ PRIME AI",
+            "نجح",
+            f"memory_id={int(memory_id)}",
+        )
+    return bool(cursor.rowcount)
+
+
+async def delete_user_memory(
+    guild_id: int,
+    user_id: int,
+    memory_id: int,
+) -> bool:
+    async with database.connect() as db:
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "DELETE FROM prime_ai_memories WHERE guild_id=? AND memory_id=? "
+                "AND scope='USER' "
+                "AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=?",
+                (int(guild_id), int(memory_id), int(user_id)),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+    if cursor.rowcount:
+        await record_audit(
+            guild_id,
+            user_id,
+            "حذف ذاكرة شخصية لـ PRIME AI",
+            "نجح",
+            f"memory_id={int(memory_id)}",
+        )
+    return bool(cursor.rowcount)
+
+
+async def forget_user_data(guild_id: int, user_id: int) -> dict:
+    """Delete the caller's private memories and durable profile metadata."""
+    import prime_ai_intelligence
+
+    await prime_ai_intelligence.ensure_schema()
+    async with database.connect() as db:
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            memories = await db.execute(
+                "DELETE FROM prime_ai_memories WHERE guild_id=? AND scope='USER' "
+                "AND COALESCE(owner_user_id, CAST(scope_id AS INTEGER))=?",
+                (int(guild_id), int(user_id)),
+            )
+            profile = await db.execute(
+                "DELETE FROM prime_ai_user_profiles WHERE guild_id=? AND user_id=?",
+                (int(guild_id), int(user_id)),
+            )
+            await _insert_audit(
+                db,
+                int(guild_id),
+                int(user_id),
+                "حذف بيانات PRIME AI الشخصية",
+                "نجح",
+                f"memories={max(0, int(memories.rowcount))} · profile={max(0, int(profile.rowcount))}",
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+    return {
+        "memories": max(0, int(memories.rowcount)),
+        "profile": max(0, int(profile.rowcount)),
+    }
 
 
 async def save_settings(

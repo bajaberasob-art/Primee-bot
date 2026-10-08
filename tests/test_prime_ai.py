@@ -21,6 +21,7 @@ from cogs.ai_tools import (
     PrimeAIActionView,
     PrimeAIMemoryCandidateView,
     PrimeAIModerationReviewView,
+    _parse_private_memory_command,
     _split_discord_answer,
 )
 from tests.dashboard_harness import FakeBot, FakeGuild, CHANNELS, Chan, ROLES
@@ -1344,6 +1345,9 @@ class PrimeAIUnderstandingTests(unittest.IsolatedAsyncioTestCase):
         bot = SimpleNamespace(
             author=SimpleNamespace(id=bot_id, bot=True),
             content="رد PRIME",
+            reference=SimpleNamespace(
+                resolved=SimpleNamespace(author=SimpleNamespace(id=current_id))
+            ),
         )
         other_bot = SimpleNamespace(
             author=SimpleNamespace(id="523456789012345678", bot=True),
@@ -1370,7 +1374,7 @@ class PrimeAIUnderstandingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(current_entry["content"], "[أنت]: تابع هذا [عضو مشار إليه]")
-        self.assertEqual(other_entry["content"], "[عضو 1]: الموضوع السابق")
+        self.assertIsNone(other_entry)
         self.assertEqual(bot_entry["role"], "assistant")
         self.assertIsNone(
             prime_ai_runtime._history_entry(
@@ -1407,7 +1411,14 @@ class PrimeAIUnderstandingTests(unittest.IsolatedAsyncioTestCase):
         )
         history_items = [
             SimpleNamespace(id=3, author=other_user, content="تابع نفس الفكرة"),
-            SimpleNamespace(id=2, author=bot_user, content="رد PRIME السابق"),
+            SimpleNamespace(
+                id=2,
+                author=bot_user,
+                content="رد PRIME السابق",
+                reference=SimpleNamespace(
+                    resolved=SimpleNamespace(author=current_user)
+                ),
+            ),
             SimpleNamespace(id=1, author=other_bot, content="يجب تجاهل هذا البوت"),
         ]
 
@@ -1439,7 +1450,6 @@ class PrimeAIUnderstandingTests(unittest.IsolatedAsyncioTestCase):
             conversation,
             [
                 {"role": "assistant", "content": "[PRIME AI]: رد PRIME السابق"},
-                {"role": "user", "content": "[عضو 1]: تابع نفس الفكرة"},
             ],
         )
         self.assertEqual(context["replied_message"]["speaker"], "عضو آخر")
@@ -1448,6 +1458,69 @@ class PrimeAIUnderstandingTests(unittest.IsolatedAsyncioTestCase):
             "الرسالة التي سأرد عليها [عضو مشار إليه]",
         )
         self.assertNotIn("223456789012345678", json.dumps(conversation, ensure_ascii=False))
+
+    def test_talk_channel_gate_is_opt_in_and_scoped_to_one_channel(self):
+        self.assertTrue(prime_ai_runtime.talk_channel_allows({}, 10))
+        self.assertTrue(
+            prime_ai_runtime.talk_channel_allows(
+                {"talk_channel": {"enabled": False, "channel_id": "20"}},
+                10,
+            )
+        )
+        self.assertTrue(
+            prime_ai_runtime.talk_channel_allows(
+                {"talk_channel": {"enabled": True, "channel_id": "10"}},
+                10,
+            )
+        )
+        self.assertFalse(
+            prime_ai_runtime.talk_channel_allows(
+                {"talk_channel": {"enabled": True, "channel_id": "10"}},
+                11,
+            )
+        )
+
+    def test_private_memory_management_parser_requires_explicit_owner_language(self):
+        self.assertEqual(
+            _parse_private_memory_command("اعرض ذاكرتي"),
+            {"action": "list", "page": 1},
+        )
+        self.assertEqual(
+            _parse_private_memory_command("عدّل ذاكرة 42: أفضل الردود القصيرة"),
+            {
+                "action": "edit",
+                "memory_id": 42,
+                "content": "أفضل الردود القصيرة",
+            },
+        )
+        self.assertEqual(
+            _parse_private_memory_command("احذف الذاكرة 42"),
+            {"action": "delete", "memory_id": 42},
+        )
+        self.assertEqual(
+            _parse_private_memory_command("امسح كل ذكرياتي"),
+            {"action": "forget"},
+        )
+        self.assertIsNone(_parse_private_memory_command("احذف عضو 42"))
+
+    def test_conversation_state_can_be_forgotten_for_one_user(self):
+        store = prime_ai_runtime.ConversationStateStore(ttl_seconds=60)
+        store.record_turn(("1", "10", "100"), "first", "reply")
+        store.record_turn(("1", "10", "101"), "second", "reply")
+        store.record_turn(("1", "11", "100"), "third", "reply")
+        stale_epoch = store.user_epoch("1", "100")
+
+        store.clear_user("1", "100")
+        store.record_turn(
+            ("1", "10", "100"),
+            "late response",
+            "must not restore forgotten context",
+            expected_epoch=stale_epoch,
+        )
+
+        self.assertEqual(store.get(("1", "10", "100")), [])
+        self.assertEqual(store.get(("1", "11", "100")), [])
+        self.assertEqual(len(store.get(("1", "10", "101"))), 2)
 
 
 class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -2026,7 +2099,7 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
 
         async with database.connect(aiosqlite.Row) as db:
             async with db.execute(
-                "SELECT content, scope, scope_id, updated_at, source, status "
+                "SELECT content, scope, scope_id, updated_at, source, status, pinned "
                 "FROM prime_ai_memories WHERE guild_id=?",
                 (guild_id,),
             ) as cur:
@@ -2038,7 +2111,15 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
                 count = int((await cur.fetchone())[0])
         self.assertEqual(
             tuple(row),
-            ("Preserve this legacy server note.", "SERVER", "", created_at, "ADMIN", "ACTIVE"),
+            (
+                "Preserve this legacy server note.",
+                "SERVER",
+                "",
+                created_at,
+                "ADMIN",
+                "ACTIVE",
+                1,
+            ),
         )
         self.assertEqual(count, 1)
 
@@ -2546,6 +2627,113 @@ class PrimeAIServiceTests(unittest.IsolatedAsyncioTestCase):
                 confidence=0.99,
                 expires_in_days=90,
             )
+
+    async def test_personal_memory_management_is_owner_scoped_and_forget_clears_profile(self):
+        guild_id = 100000000000000061
+        owner_id = 100000000000000062
+        other_user_id = 100000000000000063
+        candidate = await prime_ai_control.create_memory_candidate(
+            guild_id,
+            owner_id,
+            "Owner-only saved preference.",
+            confidence=0.96,
+            expires_in_days=90,
+        )
+        self.assertTrue(
+            await ai.resolve_memory_candidate(
+                guild_id,
+                candidate["id"],
+                owner_id,
+                approve=True,
+            )
+        )
+        await prime_ai_intelligence.update_user_profile(
+            guild_id,
+            owner_id,
+            preferences={"response_length": "short"},
+        )
+
+        own = await ai.list_user_memories(guild_id, owner_id)
+        self.assertEqual([item["content"] for item in own], ["Owner-only saved preference."])
+        self.assertFalse(own[0]["pinned"])
+        self.assertEqual(await ai.list_user_memories(guild_id, other_user_id), [])
+        self.assertFalse(
+            await ai.edit_user_memory(
+                guild_id, other_user_id, candidate["id"], "Not your memory."
+            )
+        )
+        self.assertFalse(
+            await ai.delete_user_memory(guild_id, other_user_id, candidate["id"])
+        )
+        self.assertTrue(
+            await ai.edit_user_memory(
+                guild_id, owner_id, candidate["id"], "Updated private preference."
+            )
+        )
+
+        removed = await ai.forget_user_data(guild_id, owner_id)
+        self.assertEqual(removed["memories"], 1)
+        self.assertEqual(removed["profile"], 1)
+        self.assertEqual(await ai.list_user_memories(guild_id, owner_id), [])
+        async with database.connect(aiosqlite.Row) as db:
+            async with db.execute(
+                "SELECT COUNT(*) AS total FROM prime_ai_user_profiles "
+                "WHERE guild_id=? AND user_id=?",
+                (guild_id, owner_id),
+            ) as cursor:
+                self.assertEqual(int((await cursor.fetchone())["total"]), 0)
+        audit = await ai.list_audit(guild_id)
+        serialized_audit = json.dumps(audit, ensure_ascii=False)
+        self.assertNotIn("Owner-only saved preference.", serialized_audit)
+        self.assertNotIn("Updated private preference.", serialized_audit)
+
+    async def test_retention_preserves_pinned_memory_and_cleans_global_expiry(self):
+        guild_id = 100000000000000071
+        actor_id = 100000000000000072
+        pinned = await ai.add_memory(
+            guild_id,
+            actor_id,
+            "This permanent note must survive age retention.",
+            expires_in_days=0,
+        )
+        aged = await ai.add_memory(
+            guild_id,
+            actor_id,
+            "This old temporary note should be removed.",
+            expires_in_days=90,
+        )
+        async with database.connect() as db:
+            await db.execute(
+                "UPDATE prime_ai_memories SET created_at='2000-01-01T00:00:00+00:00' "
+                "WHERE guild_id=? AND memory_id IN (?, ?)",
+                (guild_id, pinned["id"], aged["id"]),
+            )
+            await db.commit()
+
+        settings = deepcopy(prime_ai_control.DEFAULT_CONTROL_SETTINGS)
+        removed = await prime_ai_control.prune_expired_data(guild_id, settings)
+        memories = await ai.list_memories(guild_id, include_disabled=True)
+        self.assertEqual(removed["memory_days"], 1)
+        self.assertEqual([item["id"] for item in memories], [pinned["id"]])
+        self.assertTrue(memories[0]["pinned"])
+
+        async with database.connect() as db:
+            await db.execute(
+                "INSERT INTO prime_ai_memories "
+                "(guild_id, content, created_by, created_at, scope, scope_id, enabled, "
+                "expires_at, updated_at, source, confidence, status, owner_user_id, pinned) "
+                "VALUES (0, ?, ?, ?, 'GLOBAL', '', 1, ?, ?, 'ADMIN', 1.0, 'ACTIVE', NULL, 0)",
+                (
+                    "Expired global note",
+                    actor_id,
+                    prime_ai_control.timestamp(),
+                    "2000-01-01T00:00:00+00:00",
+                    prime_ai_control.timestamp(),
+                ),
+            )
+            await db.commit()
+        global_cleanup = await prime_ai_control.prune_expired_data(0, settings)
+        self.assertEqual(global_cleanup["expired_memories"], 1)
 
     async def test_memory_controls_gate_creation_and_prune_expired_candidates(self):
         guild_id = 100000000000000051

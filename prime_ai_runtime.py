@@ -457,6 +457,7 @@ class ConversationStateStore:
         self.max_messages = max(2, min(int(max_messages), 30))
         self._entries: dict[tuple[str, str, str], tuple[float, list[dict]]] = {}
         self._locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+        self._epochs: dict[tuple[str, str], int] = {}
 
     def _prune(self, now: float) -> None:
         for key, (touched, _messages) in list(self._entries.items()):
@@ -501,8 +502,13 @@ class ConversationStateStore:
         assistant_text: Any,
         *,
         max_messages: int | None = None,
+        expected_epoch: int | None = None,
     ) -> None:
         clean_key = self._clean_key(key)
+        if expected_epoch is not None and expected_epoch != self.user_epoch(
+            clean_key[0], clean_key[2]
+        ):
+            return
         cap = self.max_messages if max_messages is None else max(
             0, min(int(max_messages), self.max_messages)
         )
@@ -523,9 +529,24 @@ class ConversationStateStore:
         self._entries[clean_key] = (now, messages[-cap:])
         self._prune(now)
 
+    def user_epoch(self, guild_id: Any, user_id: Any) -> int:
+        return self._epochs.get((str(guild_id), str(user_id)), 0)
+
+    def clear_user(self, guild_id: Any, user_id: Any) -> None:
+        guild_key, user_key = str(guild_id), str(user_id)
+        epoch_key = (guild_key, user_key)
+        self._epochs[epoch_key] = self._epochs.get(epoch_key, 0) + 1
+        for key in list(self._entries):
+            if key[0] == guild_key and key[2] == user_key:
+                self._entries.pop(key, None)
+        for key, lock in list(self._locks.items()):
+            if key[0] == guild_key and key[2] == user_key and not lock.locked():
+                self._locks.pop(key, None)
+
     def clear(self) -> None:
         self._entries.clear()
         self._locks.clear()
+        self._epochs.clear()
 
 
 CONVERSATION_STATE = ConversationStateStore()
@@ -852,28 +873,28 @@ def _history_entry(
     if getattr(author, "bot", False):
         if not bot_user_id or author_id != bot_user_id:
             return None
+        reference = getattr(item, "reference", None)
+        referenced = getattr(reference, "resolved", None) if reference else None
+        referenced_author = getattr(referenced, "author", None)
+        if str(getattr(referenced_author, "id", "")) != current_user_id:
+            return None
         role, speaker = "assistant", "PRIME AI"
     else:
+        if author_id != current_user_id:
+            return None
         role = "user"
-        if author_id == current_user_id:
-            speaker = "أنت"
-        else:
-            if author_id not in speaker_ids:
-                display_name = str(
-                    getattr(author, "display_name", None)
-                    or getattr(author, "global_name", None)
-                    or getattr(author, "name", "")
-                ).strip()
-                speaker_ids[author_id] = (
-                    display_name[:50]
-                    if display_name
-                    else f"عضو {len(speaker_ids) + 1}"
-                )
-            speaker = speaker_ids[author_id]
+        speaker = "أنت"
     content = service.sanitize_discord_text(getattr(item, "content", ""), 500)
     if not content:
         return None
     return {"role": role, "content": f"[{speaker}]: {content}"}
+
+
+def talk_channel_allows(config: dict, channel_id: Any) -> bool:
+    talk_channel = (config or {}).get("talk_channel", {})
+    return not talk_channel.get("enabled") or str(
+        talk_channel.get("channel_id", "")
+    ) == str(channel_id)
 
 
 def _reply_context(referenced: Any, *, current_user_id: str, bot_user_id: str) -> dict | None:
