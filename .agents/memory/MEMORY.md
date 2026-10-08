@@ -4,3 +4,4 @@
 - [PRIME management expansion](prime-management-expansion.md) — Extend existing bot, dashboard, and database systems additively; preserve current features and data.
 - [Dashboard browser verification](dashboard-browser-verification.md) — Browser follow-ups can retain old service-worker assets; verify a fresh client before diagnosing unchanged UI.
 - [Announcement area scope](announcement-area-scope.md) — Discord Auto Reactions, not paid advertising; preserve live-only processing and bounded work.
+- [Discord file ownership](discord-file-ownership.md) — Caller-provided upload streams need explicit cleanup after discord.File restores their close method.

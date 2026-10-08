@@ -31,6 +31,8 @@
     read_message_history: "قراءة سجل الرسائل",
     add_reactions: "إضافة التفاعلات",
     use_external_emojis: "استخدام الإيموجي الخارجي",
+    send_messages: "إرسال الرسائل",
+    attach_files: "إرفاق الملفات",
   };
 
   function loadMagic() {
@@ -64,7 +66,9 @@
     var st = {
       loading: true, loadError: "", snap: null, ids: [], channel: "", enabled: false,
       saving: false, conflict: null, msg: null, query: "", touched: false,
+      second: "", lineOn: false, lineCh: [], imageId: "", image: null, localUrl: "", uploading: false, upMsg: null,
     };
+    function revokeLocal() { if (st.localUrl) { try { URL.revokeObjectURL(st.localUrl); } catch (_) {} st.localUrl = ""; } }
     var magicHost = null;
 
     var root = el("section", { class: "announcement-space", dir: "rtl", "aria-labelledby": id + "-t" });
@@ -79,10 +83,21 @@
     function toast(m, t) { try { config.toast && config.toast(m, t); } catch (_) {} }
 
     function applySnapshot(data, keepDraft) {
-      st.snap = data;
-      st.conflict = null;
+      var stale = keepDraft && st.snap && data.config && st.snap.config &&
+        data.config.revision !== st.snap.config.revision;
+      if (stale) {
+        // Keep the old base revision so the draft is never silently rebased.
+        st.snap = Object.assign({}, data, { config: st.snap.config, line_image: st.snap.line_image });
+        st.conflict = data.config;
+      } else { st.snap = data; st.conflict = null; }
       if (!keepDraft) {
+        revokeLocal(); st.upMsg = null;
         var c = data.config || {};
+        st.second = c.second_channel_id || "";
+        st.lineOn = !!c.line_enabled;
+        st.lineCh = (c.line_channel_ids || []).slice(0, 2);
+        st.imageId = c.line_image_id || "";
+        st.image = data.line_image || null;
         st.channel = c.channel_id || "";
         st.ids = (c.emoji_ids || []).slice();
         st.enabled = !!c.enabled;
@@ -93,6 +108,8 @@
       if (!st.snap) return false;
       var c = st.snap.config || {};
       return (c.channel_id || "") !== st.channel || !!c.enabled !== st.enabled ||
+        (c.second_channel_id || "") !== st.second || !!c.line_enabled !== st.lineOn ||
+        (c.line_channel_ids || []).join(",") !== st.lineCh.join(",") || (c.line_image_id || "") !== st.imageId ||
         (c.emoji_ids || []).join(",") !== st.ids.join(",");
     }
     function emojiMap() {
@@ -103,6 +120,13 @@
     function usable(e) { return !!(e && e.available && e.usable); }
     function usableCount() { return ((st.snap && st.snap.emojis) || []).filter(usable).length; }
     function validate() {
+      if (st.second && !st.channel) return "اختر القناة الأولى قبل إضافة قناة تفاعلات ثانية.";
+      if (st.second && st.second === st.channel) return "القناة الثانية يجب أن تختلف عن القناة الأولى.";
+      if (st.lineOn) {
+        if (st.lineCh.length < 1 || st.lineCh.length > 2) return "اختر قناة أو قناتين للاوتو لاين قبل التفعيل.";
+        if (st.lineCh.length === 2 && st.lineCh[0] === st.lineCh[1]) return "قناتا اللاين يجب أن تكونا مختلفتين.";
+        if (!st.imageId) return "ارفع صورة الفاصل قبل تفعيل الاوتو لاين.";
+      }
       if (!st.enabled) return "";
       if (!st.channel) return "اختر قناة قبل التفعيل.";
       var m = emojiMap();
@@ -112,6 +136,7 @@
     }
 
     async function load(opts) {
+      if (st.saving || st.uploading) return;
       opts = opts || {};
       var my = ++token;
       st.loading = !st.snap; st.loadError = "";
@@ -136,7 +161,7 @@
     }
 
     async function save() {
-      if (st.saving || !st.snap) return;
+      if (st.saving || st.uploading || !st.snap) return;
       var bad = validate();
       if (bad) { st.msg = { kind: "error", text: bad }; render(); return; }
       var my = ++token;
@@ -145,6 +170,10 @@
         channel_id: st.channel || null,
         emoji_ids: st.ids.slice(),
         enabled: st.enabled,
+        second_channel_id: st.second || null,
+        line_enabled: st.lineOn,
+        line_channel_ids: st.lineCh.slice(),
+        line_image_id: st.imageId || null,
         revision: st.snap.config.revision,
       };
       try {
@@ -188,6 +217,121 @@
       render();
     }
 
+    async function upload(file) {
+      if (!file || st.uploading || st.saving) return;
+      var okType = ["image/png", "image/jpeg", "image/gif"].indexOf(file.type) >= 0;
+      if (!okType) { st.upMsg = { kind: "error", text: "الصيغ المسموحة: PNG أو JPG أو GIF فقط." }; render(); return; }
+      if (file.size > 2 * 1024 * 1024) { st.upMsg = { kind: "error", text: "حجم الصورة يتجاوز 2 ميغابايت." }; render(); return; }
+      var my = ++token;
+      st.uploading = true; st.upMsg = null; render();
+      function send() {
+        return config.api(url + "/image", { method: "POST", cache: "no-store",
+          headers: { "Content-Type": file.type || "application/octet-stream", "X-CSRF-Token": config.getCsrf() }, body: file });
+      }
+      try {
+        var r = await send();
+        if (r.status === 403 && config.refreshSession) {
+          var d0 = null; try { d0 = await r.clone().json(); } catch (_) {}
+          if (!d0 || /csrf/i.test(String(d0.error || ""))) { await config.refreshSession(); r = await send(); }
+        }
+        var data = null; try { data = await r.json(); } catch (_) {}
+        if (disposed || my !== token) return;
+        st.uploading = false;
+        if (r.ok && data && data.image && data.image.id) {
+          revokeLocal();
+          try { st.localUrl = URL.createObjectURL(file); } catch (_) {}
+          st.image = data.image; st.imageId = data.image.id; st.touched = true;
+          st.upMsg = { kind: "ok", text: "تم رفع الصورة كمسودة. اضغط حفظ التغييرات لتفعيلها." };
+        } else {
+          st.upMsg = { kind: "error", text: (data && data.message) || ERR[data && data.error] ||
+            (r.status === 403 ? ERR.forbidden : "تعذر رفع الصورة. تم الاحتفاظ بالاختيار السابق.") };
+        }
+      } catch (e) {
+        if (disposed || my !== token) return;
+        st.uploading = false;
+        st.upMsg = { kind: "error", text: "تعذر الاتصال أثناء الرفع. تم الاحتفاظ بالاختيار السابق." };
+      }
+      render();
+    }
+
+    function chanSelect(sid, label, value, optional, onpick) {
+      var snap = st.snap, sel = el("select", { id: id + "-" + sid, disabled: st.saving,
+        onchange: function (e) { onpick(e.target.value); st.touched = true; st.msg = null; render(); } });
+      sel.append(el("option", { value: "", text: optional ? "— بدون —" : "— اختر قناة —" }));
+      (snap.channels || []).forEach(function (c) {
+        var o = el("option", { value: c.id, text: "# " + c.name }); if (c.id === value) o.selected = true; sel.append(o);
+      });
+      if (value && !(snap.channels || []).some(function (c) { return c.id === value; })) {
+        var o2 = el("option", { value: value, text: "قناة غير متاحة" }); o2.selected = true; sel.append(o2);
+      }
+      return el("div", { class: "as-field" }, el("label", { for: id + "-" + sid, text: label }), sel);
+    }
+
+    function chanStatus(list, title) {
+      if (!list || !list.length) return null;
+      var names = {}; ((st.snap.channels) || []).forEach(function (c) { names[c.id] = c.name; });
+      var box = el("ul", { class: "as-chstat", "aria-label": title });
+      list.forEach(function (x) {
+        var good = x.code === "ready", stopped = x.code === "disabled";
+        var miss = (x.missing_permissions || []).map(function (m) { return PERM[m] || m; }).join("، ");
+        box.append(el("li", { class: good ? "is-ok" : stopped ? "is-stopped" : "is-bad" },
+          el("b", { text: "# " + (names[x.channel_id] || "قناة") }),
+          el("span", { text: " " + (x.message || (good ? "جاهزة" : x.code || "")) }),
+          miss ? el("small", { text: " — ناقص: " + miss }) : null));
+      });
+      return box;
+    }
+
+    function linePanel() {
+      var wrap = el("div", { class: "as-card as-line" });
+      wrap.append(el("h3", { text: "الاوتو لاين (فاصل بالصورة)" }),
+        el("p", { class: "as-muted", text: "بعد كل رسالة نصية جديدة مؤهلة ترسل صورة الفاصل تلقائياً في القنوات المختارة. مستقل عن التفاعلات." }));
+      wrap.append(el("label", { class: "as-switch" },
+        el("input", { type: "checkbox", role: "switch", id: id + "-lon", checked: st.lineOn ? "checked" : null, disabled: st.saving || st.uploading,
+          onchange: function (e) { st.lineOn = e.target.checked; st.touched = true; st.msg = null; render(); } }),
+        el("span", { text: st.lineOn ? "الاوتو لاين: مفعّل" : "الاوتو لاين: متوقف" })));
+      if (st.lineOn) { var sw = wrap.querySelector("input"); sw.checked = true; }
+      wrap.append(chanSelect("l1", "قناة اللاين الأولى", st.lineCh[0] || "", false, function (v) {
+        st.lineCh = v ? [v].concat(st.lineCh.slice(1, 2)) : st.lineCh.slice(1, 2);
+      }));
+      wrap.append(chanSelect("l2", "قناة اللاين الثانية (اختيارية)", st.lineCh[1] || "", true, function (v) {
+        st.lineCh = v ? [st.lineCh[0] || "", v].filter(Boolean) : st.lineCh.slice(0, 1);
+      }));
+      var img = st.image, src = st.localUrl || (img && img.url) || "";
+      var prev = el("div", { class: "as-line-prev" });
+      if (src) prev.append(el("img", { src: src, alt: "معاينة صورة الفاصل", class: "as-line-img" }));
+      else prev.append(el("span", { class: "as-muted", text: "لا توجد صورة محددة" }));
+      wrap.append(prev);
+      if (img) wrap.append(el("p", { class: "as-muted", text: img.mime + " · " + img.width + "×" + img.height + " · " + Math.ceil(img.size / 1024) + " ك.ب" +
+        (st.imageId && st.snap.config.line_image_id !== st.imageId ? " · مسودة غير محفوظة" : "") }));
+      var fi = el("input", { type: "file", id: id + "-file", accept: "image/png,image/jpeg,image/gif", hidden: true,
+        onchange: function (e) { var f = e.target.files && e.target.files[0]; e.target.value = ""; upload(f); } });
+      wrap.append(fi, el("div", { class: "as-row" },
+        el("button", { class: "btn as-btn", type: "button", id: id + "-up", disabled: st.saving || st.uploading,
+          onclick: function () { fi.click(); }, text: st.uploading ? "جارٍ الرفع…" : "رفع صورة (PNG/JPG/GIF، حتى 2MB)" }),
+        el("button", { class: "btn as-btn", type: "button", disabled: st.saving || st.uploading || !st.imageId,
+          onclick: function () { revokeLocal(); st.imageId = ""; st.image = null; st.touched = true; st.upMsg = null; render(); }, text: "إزالة من المسودة" })));
+      if (st.upMsg) wrap.append(el("p", { class: "as-msg as-" + st.upMsg.kind, role: st.upMsg.kind === "error" ? "alert" : "status", text: st.upMsg.text }));
+      var ls = st.snap.line_status;
+      if (ls) {
+        if (ls.message) wrap.append(el("p", { class: "as-muted", text: "حالة اللاين: " + ls.message }));
+        if ((ls.missing_permissions || []).length) wrap.append(el("p", { class: "as-muted", text: "صلاحيات ناقصة: " + ls.missing_permissions.map(function (m) { return PERM[m] || m; }).join("، ") }));
+        var cs = chanStatus(ls.channels, "حالة قنوات اللاين"); if (cs) wrap.append(cs);
+      }
+      wrap.append(el("p", { class: "as-hint", text: "الصلاحيات المطلوبة للاوتو لاين: إرسال الرسائل وإرفاق الملفات. الصورة الجديدة لا تُفعَّل إلا بعد الحفظ، وإزالتها تتطلب إيقاف اللاين أو رفع صورة بديلة." }));
+      return wrap;
+    }
+
+    function rulesBlock() {
+      return el("div", { class: "as-card" },
+        el("h3", { text: "قواعد الرسائل المؤهلة" }),
+        el("ul", { class: "as-rules" },
+          el("li", { text: "نص فقط وغير فارغ: أي رسالة تحتوي ملفاً أو صورة أو ملصقاً أو Embed فقط أو رسالة نظام تُتجاهل، حتى مع وجود نص مرافق." }),
+          el("li", { text: "رسائل البوت الخاصة بالفاصل تُتجاهل ولا تُنتج فاصلاً جديداً." }),
+          el("li", { text: "الرسائل الجديدة فقط، بدون إعادة تشغيل على السجل القديم." }),
+          el("li", { text: "قناة التفاعلات الثانية اختيارية وتستخدم نفس الإيموجي." })));
+    }
+
     function pill(text, kind) { return el("span", { class: "as-pill as-" + kind, text: text }); }
 
     function emojiImg(e, cls) {
@@ -207,6 +351,7 @@
       box.append(el("p", { class: "as-hint", text: "الإيموجيات من هذا السيرفر فقط؛ صلاحية استخدام الإيموجيات الخارجية ليست مطلوبة لهذا الاختيار." }));
       var c = st.snap.config || {};
       if (c.last_error) box.append(el("p", { text: "آخر خطأ: " + c.last_error }));
+      var rc = chanStatus(s.channels, "حالة قنوات التفاعل"); if (rc) box.append(rc);
       box.append(el("button", { class: "btn as-btn", type: "button", onclick: function () { load({ keepDraft: true }); }, text: "تحديث الحالة" }));
       return box;
     }
@@ -222,11 +367,15 @@
       });
       if (!row.children.length) row.append(el("span", { class: "as-muted", text: "لا توجد إيموجي محفوظة" }));
       var rt = st.snap.runtime || {};
+      function nm(i) { var x = (st.snap.channels || []).find(function (y) { return y.id === i; }); return x ? "#" + x.name : "قناة غير معروفة"; }
       return el("div", { class: "as-card" },
         el("h3", { text: "الحالة المحفوظة" }),
         el("p", null, pill(c.enabled ? "مفعّلة" : "متوقفة", c.enabled ? "on" : "off"), " ",
           el("span", { class: "as-muted", text: "المراجعة " + c.revision })),
         el("p", { text: "القناة: " + (c.channel_id ? (ch ? "#" + ch.name : "قناة غير معروفة") : "غير محددة") }),
+        el("p", { text: "القناة الثانية: " + (c.second_channel_id ? nm(c.second_channel_id) : "غير محددة") }),
+        el("p", null, pill(c.line_enabled ? "لاين مفعّل" : "لاين متوقف", c.line_enabled ? "on" : "off"), " ",
+          el("span", { class: "as-muted", text: (c.line_channel_ids || []).map(nm).join("، ") })),
         row,
         el("p", { class: "as-muted", text: "قائمة التشغيل: " + (rt.queue_size || 0) + " · المتجاهلة: " + (rt.dropped || 0) }));
     }
@@ -258,6 +407,7 @@
         var o = el("option", { value: st.channel, text: "قناة غير متاحة" }); o.selected = true; sel.append(o);
       }
       wrap.append(el("div", { class: "as-field" }, el("label", { for: id + "-ch", text: "قناة الإعلانات" }), sel));
+      wrap.append(chanSelect("ch2", "قناة ثانية (اختيارية، نفس التفاعلات)", st.second, true, function (v) { st.second = v; }));
       return wrap;
     }
 
@@ -277,7 +427,8 @@
       shown.forEach(function (e) {
         var on = st.ids.indexOf(e.id) >= 0, ok = usable(e);
         grid.append(el("button", {
-          type: "button", class: "as-emoji-card" + (on ? " is-on" : ""), "aria-pressed": on ? "true" : "false",
+          type: "button", id: id + "-emoji-" + e.id,
+          class: "as-emoji-card" + (on ? " is-on" : ""), "aria-pressed": on ? "true" : "false",
           disabled: st.saving || (!ok && !on),
           onclick: function () { toggle(e.id); },
         }, emojiImg(e), el("span", { class: "as-name", text: e.name }),
@@ -303,6 +454,7 @@
 
     function render() {
       if (disposed) return;
+      var gridScroll = gridHost.scrollTop;
       var focusId = document.activeElement && root.contains(document.activeElement) ? document.activeElement.id : "";
       var keep = st.query;
       if (magicHost && window.PrimeAIMagic) { try { window.PrimeAIMagic.dispose(magicHost); } catch (_) {} }
@@ -340,7 +492,7 @@
       }
       root.append(statusBlock());
       var cols = el("div", { class: "as-cols" }, persistedBlock(), draftPanel());
-      root.append(cols);
+      root.append(cols, linePanel(), rulesBlock());
 
       var pick = el("div", { class: "as-card" },
         el("h3", { text: "إيموجي السيرفر (" + sel + "/" + MAX + ")" }),
@@ -349,15 +501,16 @@
       pick.append(gridHost);
       renderGrid();
       root.append(pick, previewBlock());
+      gridHost.scrollTop = gridScroll;
 
       var err = validate();
       var actions = el("div", { class: "as-actions" });
       if (st.msg) actions.append(el("p", { class: "as-msg as-" + st.msg.kind, role: st.msg.kind === "error" ? "alert" : "status", text: st.msg.text }));
       else if (err) actions.append(el("p", { class: "as-msg as-error", text: err }));
       actions.append(
-        el("button", { class: "btn primary as-btn", type: "button", disabled: st.saving || !dirty(), onclick: save,
+        el("button", { class: "btn primary as-btn", type: "button", disabled: st.saving || st.uploading || !dirty(), onclick: save,
           text: st.saving ? "جارٍ الحفظ…" : "حفظ التغييرات" }),
-        el("button", { class: "btn as-btn", type: "button", disabled: st.saving || !dirty(),
+        el("button", { class: "btn as-btn", type: "button", disabled: st.saving || st.uploading || !dirty(),
           onclick: function () { applySnapshot(st.snap, false); st.msg = null; render(); }, text: "تجاهل المسودة" }));
       root.append(actions);
 
@@ -377,7 +530,7 @@
     load();
 
     return function cleanup() {
-      disposed = true; token++;
+      disposed = true; token++; revokeLocal();
       if (magicHost && window.PrimeAIMagic) { try { window.PrimeAIMagic.dispose(magicHost); } catch (_) {} }
       magicHost = null;
       root.remove();

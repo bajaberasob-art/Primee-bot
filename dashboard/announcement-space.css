@@ -45,6 +45,12 @@
 .announcement-space .as-chip, .announcement-space .as-react { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--as-raised); font-size: 13px; }
 .announcement-space .as-emoji-sm { width: 20px; height: 20px; object-fit: contain; }
 .announcement-space .as-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.announcement-space .as-grid-host {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
 .announcement-space .as-emoji-card {
   display: grid; justify-items: center; gap: 4px; min-height: 96px; padding: 10px 6px;
   border: 1px solid var(--as-line); border-radius: 12px; background: var(--as-raised);
@@ -90,3 +96,11 @@
   .announcement-space .as-btn { flex: 0 0 auto; }
   .announcement-space { padding-bottom: 32px; }
 }
+.announcement-space .as-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.announcement-space .as-line-prev { display: grid; place-items: center; min-height: 96px; padding: 10px; border: 1px dashed var(--as-line); border-radius: 12px; background: var(--as-raised); }
+.announcement-space .as-line-img { max-width: 100%; max-height: 160px; object-fit: contain; border-radius: 8px; }
+.announcement-space .as-chstat, .announcement-space .as-rules { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 13px; line-height: 1.8; }
+.announcement-space .as-rules { list-style: disc inside; color: var(--as-muted); }
+.announcement-space .as-chstat li { padding: 6px 10px; border-radius: 10px; background: var(--as-raised); border-inline-start: 3px solid var(--green, #22c55e); }
+.announcement-space .as-chstat li.is-bad { border-inline-start-color: var(--red, #ef4444); }
+.announcement-space .as-chstat small { color: var(--as-muted); }

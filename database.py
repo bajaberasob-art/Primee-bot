@@ -2335,6 +2335,34 @@ async def init_db() -> None:
                     updated_at REAL NOT NULL
                 )
             """)
+            announcement_columns = {
+                "second_channel_id": "TEXT",
+                "line_enabled": "INTEGER NOT NULL DEFAULT 0",
+                "line_channel_ids": "TEXT NOT NULL DEFAULT '[]'",
+                "line_image_id": "TEXT",
+                "line_activated_at": "REAL",
+                "line_last_error": "TEXT",
+                "line_last_error_at": "REAL",
+            }
+            async with db.execute("PRAGMA table_info(announcement_reaction_settings)") as cursor:
+                existing_announcement_columns = {row[1] for row in await cursor.fetchall()}
+            for name, declaration in announcement_columns.items():
+                if name not in existing_announcement_columns:
+                    await db.execute(
+                        f"ALTER TABLE announcement_reaction_settings ADD COLUMN {name} {declaration}"
+                    )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS announcement_line_images (
+                    guild_id INTEGER NOT NULL,
+                    image_id TEXT NOT NULL,
+                    mime TEXT NOT NULL,
+                    width INTEGER NOT NULL,
+                    height INTEGER NOT NULL,
+                    payload BLOB NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (guild_id, image_id)
+                )
+            """)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS broadcast_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

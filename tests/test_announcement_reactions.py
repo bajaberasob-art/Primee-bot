@@ -1,6 +1,7 @@
 """Real SQLite and fake Discord objects; no live Discord actions."""
 import asyncio
 import json
+import io
 import os
 import tempfile
 import time
@@ -10,10 +11,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import discord
+from PIL import Image
 from aiohttp import web
 
 import announcement_dashboard as api
 import announcement_reactions as store
+import announcement_images as images
 import database
 import web_server as ws
 from cogs.announcement_reactions import AnnouncementReactions
@@ -34,10 +37,11 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
         self.perms = SimpleNamespace(
             view_channel=True, read_message_history=True, add_reactions=True,
             use_external_emojis=False,
+            send_messages=True, attach_files=True,
         )
         self.channels = [
             SimpleNamespace(id=int(key), name="announcements", type=discord.ChannelType.text,
-                            permissions_for=lambda member: self.perms)
+                            permissions_for=lambda member: self.perms, send=AsyncMock())
             for key in (CHANNEL, OTHER)
         ]
         self.emojis = [
@@ -74,6 +78,7 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
             channel=self.guild.get_channel(int(channel)),
             created_at=datetime.fromtimestamp(time.time() - age, timezone.utc),
             add_reaction=AsyncMock(),
+            content="نص إعلان جديد", attachments=[], stickers=[], embeds=[],
         )
 
     async def drain_one(self):
@@ -162,6 +167,15 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
         await self.enable(enabled=False)
         self.cog.update_config(old)
         self.assertNotIn(GUILD, self.cog.configs)
+
+    async def test_late_failure_cannot_restore_errors_after_a_new_save(self):
+        old = await self.enable_line(reactions=True)
+        await self.enable(enabled=False, line_enabled=False)
+        with patch.object(store, "record_error", new_callable=AsyncMock) as record:
+            await self.cog.note_error(old, "old reaction failure")
+            await self.cog.note_error(old, "old line failure", "line")
+            record.assert_not_awaited()
+        self.assertFalse(self.cog.errors)
 
     async def test_duplicate_gateway_event_is_not_queued_twice(self):
         await self.enable()
@@ -254,3 +268,177 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(good.add_reaction.await_count, 4)
         self.assertFalse(worker.done())
         self.assertEqual(self.cog.runtime_status(GUILD)["queue_size"], 0)
+
+    def image_bytes(self, format="PNG", color="purple"):
+        buffer = io.BytesIO()
+        Image.new("RGB", (256, 16), color).save(buffer, format=format)
+        return buffer.getvalue()
+
+    async def enable_line(self, reactions=False, **changes):
+        image = await images.upload(GUILD, self.image_bytes())
+        return await self.enable(
+            enabled=reactions, line_enabled=True, line_channel_ids=[CHANNEL],
+            line_image_id=image["id"], **changes,
+        )
+
+    async def test_optional_second_channel_uses_same_emojis_and_rejects_duplicates(self):
+        await self.enable(second_channel_id=OTHER)
+        msg = self.message(OTHER)
+        await self.cog.on_message(msg)
+        await self.drain_one()
+        self.assertEqual(msg.add_reaction.await_count, 4)
+        old = await store.get_settings(GUILD)
+        for second in (CHANNEL, "900000000000000001", 123):
+            with self.assertRaises(ValueError):
+                store.validate_changes(self.guild, self.body(second_channel_id=second), old)
+
+    async def test_strict_text_only_excludes_captioned_media_empty_stickers_system_and_self_bot(self):
+        await self.enable_line(reactions=True)
+        self.cog.bot = SimpleNamespace(user=SimpleNamespace(id=500000000000000001))
+        for changes in (
+            {"content": ""}, {"content": "  \n"}, {"attachments": [object()]},
+            {"stickers": [object()]}, {"type": discord.MessageType.pins_add},
+            {"content": "", "embeds": [object()]},
+            {"embeds": [SimpleNamespace(type="gifv")]},
+            {"embeds": [SimpleNamespace(type="rich", image=SimpleNamespace(url="https://example.test/a.png"))]},
+            {"author": self.cog.bot.user},
+        ):
+            msg = self.message()
+            for key, value in changes.items():
+                setattr(msg, key, value)
+            await self.cog.on_message(msg)
+        self.assertTrue(self.cog.queue.empty())
+        # Other bots' actual text announcements remain supported.
+        msg = self.message()
+        msg.author = SimpleNamespace(id=500000000000000002, bot=True)
+        await self.cog.on_message(msg)
+        self.assertEqual(self.cog.queue.qsize(), 1)
+
+    async def test_line_works_independently_and_uses_saved_image_without_mentions(self):
+        await self.enable_line()
+        captured = []
+
+        async def send(**kwargs):
+            captured.append(kwargs["file"].fp.getvalue())
+            self.assertFalse(kwargs["allowed_mentions"].everyone)
+            self.assertFalse(kwargs["allowed_mentions"].users)
+        self.channels[0].send.side_effect = send
+        msg = self.message()
+        await self.cog.on_message(msg)
+        await self.drain_one()
+        msg.add_reaction.assert_not_awaited()
+        self.assertEqual(captured, [self.image_bytes()])
+        self.assertTrue(self.channels[0].send.await_args.kwargs["file"].fp.closed)
+        await self.cog.on_message(self.message(OTHER))
+        await self.cog.on_message(self.message(age=3600))
+        self.assertTrue(self.cog.queue.empty())
+
+    async def test_reactions_and_line_use_independent_channel_selections(self):
+        image = await images.upload(GUILD, self.image_bytes())
+        await self.enable(
+            line_enabled=True, line_channel_ids=[OTHER], line_image_id=image["id"],
+        )
+        msg = self.message(CHANNEL)
+        await self.cog.on_message(msg)
+        await self.drain_one()
+        self.assertEqual(msg.add_reaction.await_count, 4)
+        self.channels[0].send.assert_not_awaited()
+        other = self.message(OTHER)
+        await self.cog.on_message(other)
+        await self.drain_one()
+        other.add_reaction.assert_not_awaited()
+        self.assertEqual(self.channels[1].send.await_count, 1)
+
+    async def test_line_queued_disable_prevents_send_and_late_cache_update_cannot_restore_it(self):
+        old = await self.enable_line()
+        msg = self.message()
+        await self.cog.on_message(msg)
+        await self.enable(enabled=False, line_enabled=False)
+        self.cog.update_config(old)
+        await self.drain_one()
+        self.channels[0].send.assert_not_awaited()
+
+    async def test_reaction_permission_failure_does_not_stop_line_and_recovery_is_independent(self):
+        await self.enable_line(reactions=True)
+        self.perms.add_reactions = False
+        msg = self.message()
+        await self.cog.on_message(msg)
+        await self.drain_one()
+        msg.add_reaction.assert_not_awaited()
+        self.assertEqual(self.channels[0].send.await_count, 1)
+        self.assertTrue((await store.get_settings(GUILD))["last_error"])
+        self.perms.add_reactions = True
+        self.perms.attach_files = False
+        next_msg = self.message()
+        await self.cog.on_message(next_msg)
+        await self.drain_one()
+        self.assertEqual(next_msg.add_reaction.await_count, 4)
+        self.assertEqual(self.channels[0].send.await_count, 1)
+        saved = await store.get_settings(GUILD)
+        self.assertIsNone(saved["last_error"])
+        self.assertIn("attach_files", saved["line_last_error"])
+        self.perms.attach_files = True
+        await self.cog.on_message(self.message())
+        await self.drain_one()
+        self.assertIsNone((await store.get_settings(GUILD))["line_last_error"])
+
+    async def test_image_upload_is_draft_and_active_asset_is_not_pruned(self):
+        old = await self.enable_line()
+        for color in ("blue", "red", "green", "yellow"):
+            await images.upload(GUILD, self.image_bytes(color=color))
+        self.assertEqual((await store.get_settings(GUILD))["line_image_id"], old["line_image_id"])
+        self.assertIsNotNone(await images.get_image(GUILD, old["line_image_id"], True))
+        self.assertIsNone(await images.get_image(GUILD + 1, old["line_image_id"]))
+        async with database.connect() as db:
+            async with db.execute("SELECT COUNT(*) FROM announcement_line_images WHERE guild_id=?", (GUILD,)) as cursor:
+                self.assertLessEqual((await cursor.fetchone())[0], 4)
+
+    async def test_image_types_dimensions_and_size_are_validated(self):
+        for format, mime in (("PNG", "image/png"), ("JPEG", "image/jpeg"), ("GIF", "image/gif")):
+            image = await images.upload(GUILD, self.image_bytes(format=format))
+            self.assertEqual(image["mime"], mime)
+        for payload in (b"<svg></svg>", b"not an image", b"x" * (images.MAX_IMAGE_BYTES + 1)):
+            with self.assertRaises(ValueError):
+                await images.upload(GUILD, payload)
+        buffer = io.BytesIO()
+        Image.new("RGB", (4097, 1)).save(buffer, "PNG")
+        with self.assertRaises(ValueError):
+            await images.upload(GUILD, buffer.getvalue())
+
+    async def test_restart_rehydrates_line_image_channels_and_independent_activation(self):
+        config = await self.enable_line()
+        await self.cog.cog_unload()
+        self.cog = AnnouncementReactions(None)
+        await self.cog.cog_load()
+        restored = self.cog.configs[GUILD]
+        self.assertFalse(restored["enabled"])
+        self.assertTrue(restored["line_enabled"])
+        self.assertEqual(restored["line_activated_at"], config["line_activated_at"])
+        self.assertEqual(restored["line_channel_ids"], [CHANNEL])
+        msg = self.message()
+        await self.cog.on_message(msg)
+        await asyncio.wait_for(self.cog.queue.join(), 3)
+        self.assertEqual(self.channels[0].send.await_count, 1)
+
+    async def test_missing_or_foreign_image_rejected_through_authenticated_save(self):
+        request = SimpleNamespace()
+        foreign = await images.upload(GUILD + 1, self.image_bytes())
+        for key in ("0" * 64, foreign["id"]):
+            body = self.body(enabled=False, line_enabled=True, line_channel_ids=[CHANNEL], line_image_id=key)
+            with patch.object(ws, "authorize", new=AsyncMock(return_value=({"id": "10"}, self.guild))), \
+                 patch.object(ws, "read_json_body", new=AsyncMock(return_value=body)):
+                response = await api.api_save(request)
+                self.assertEqual(response.status, 400)
+        self.assertEqual((await store.get_settings(GUILD))["revision"], 0)
+
+    async def test_line_validation_requires_image_distinct_one_or_two_server_channels(self):
+        old = await store.get_settings(GUILD)
+        for extras in (
+            {"line_image_id": None, "line_channel_ids": [CHANNEL]},
+            {"line_image_id": "a" * 64, "line_channel_ids": []},
+            {"line_image_id": "a" * 64, "line_channel_ids": [CHANNEL, CHANNEL]},
+            {"line_image_id": "a" * 64, "line_channel_ids": [CHANNEL, OTHER, "300000000000000003"]},
+            {"line_image_id": "a" * 64, "line_channel_ids": ["900000000000000001"]},
+        ):
+            with self.assertRaises(ValueError):
+                store.validate_changes(self.guild, self.body(enabled=False, line_enabled=True, **extras), old)

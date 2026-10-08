@@ -884,19 +884,19 @@ def pwa_svg() -> str:
 
 
 def service_worker_source() -> str:
-    return """const CACHE = "prime-dashboard-shell-v26";
+    return """const CACHE = "prime-dashboard-shell-v27";
 const STATIC = [
   "./",
   "./static/app.css",
   "./static/ai-control.css?v=prime-ai-workspace-6",
   "./static/visual-refresh.css?v=visual-refresh-2",
   "./static/subscriptions.css?v=subs-1",
-  "./static/announcement-space.css?v=announcements-2",
-  "./static/announcement-space.js?v=announcements-1",
+  "./static/announcement-space.css?v=announcements-3",
+  "./static/announcement-space.js?v=announcements-3",
   "./static/leveling-card-assets.css?v=phase7",
   "./static/ai-control.js?v=prime-ai-workspace-6",
   "./static/ai-magic-island.js?v=prime-ai-workspace-6",
-  "./static/app.js?v=prime-announcements-dashboard-1",
+  "./static/app.js?v=prime-announcements-dashboard-3",
   "./manifest.json",
   "./icon.svg",
   "./icon-192.png",

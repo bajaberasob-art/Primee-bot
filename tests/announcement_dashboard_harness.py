@@ -15,6 +15,7 @@ from cogs.announcement_reactions import AnnouncementReactions
 PERMS = SimpleNamespace(
     view_channel=True, read_message_history=True, add_reactions=True,
     use_external_emojis=False,
+    send_messages=True, attach_files=True,
 )
 
 
@@ -44,23 +45,50 @@ async def inject_message(request):
     if not channel:
         raise web.HTTPBadRequest()
     reactions = []
+    lines = []
+    author_id = int(data.get("author_id", 100000000000000020))
+    bot_user = getattr(base.ws.bot_ref, "user", None)
+    if data.get("own_bot"):
+        author_id = bot_user.id
 
     async def add_reaction(emoji):
         reactions.append(str(emoji.id))
 
+    async def send(**kwargs):
+        file = kwargs["file"]
+        lines.append({"filename": file.filename, "size": len(file.fp.getvalue())})
+        # Dispatch the bot's sent message too, proving no auto-line recursion.
+        own_message = SimpleNamespace(
+            id=time.time_ns(), guild=guild, channel=channel, content="",
+            attachments=[object()], stickers=[], embeds=[], author=bot_user,
+            created_at=datetime.now(timezone.utc),
+        )
+        await base.ws.bot_ref.announcements.on_message(own_message)
+
+    channel.send = send
     message = SimpleNamespace(
         id=time.time_ns(), guild=guild, channel=channel,
         created_at=datetime.fromtimestamp(time.time() - float(data.get("age_seconds", 0)), timezone.utc),
         add_reaction=add_reaction,
+        content=data.get("content", "رسالة نصية جديدة"),
+        attachments=[object()] if data.get("attachment") else [],
+        stickers=[object()] if data.get("sticker") else [], embeds=[],
+        type=discord.MessageType.pins_add if data.get("system") else discord.MessageType.default,
+        author=SimpleNamespace(id=author_id),
     )
     await base.ws.bot_ref.announcements.on_message(message)
     await base.ws.bot_ref.announcements.queue.join()
-    return web.json_response({"reactions": reactions})
+    return web.json_response({"reactions": reactions, "lines": lines})
 
 
 async def toggle_permissions(request):
     PERMS.add_reactions = request.query.get("denied") != "1"
-    return web.json_response({"add_reactions": PERMS.add_reactions})
+    PERMS.attach_files = request.query.get("no_files") != "1"
+    PERMS.send_messages = request.query.get("no_send") != "1"
+    return web.json_response({
+        "add_reactions": PERMS.add_reactions, "attach_files": PERMS.attach_files,
+        "send_messages": PERMS.send_messages,
+    })
 
 
 async def main():
@@ -73,6 +101,7 @@ async def main():
         base.FakeGuild.emojis.append(emoji)
     await base.database.init_db()
     bot = Bot()
+    bot.user = SimpleNamespace(id=500000000000000001)
     bot.announcements = AnnouncementReactions(bot)
     base.ws.bot_ref = bot
     await bot.announcements.cog_load()

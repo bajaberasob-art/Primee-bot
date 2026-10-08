@@ -4,6 +4,7 @@ import logging
 from aiohttp import web
 
 import announcement_reactions as store
+import announcement_images as images
 
 
 logger = logging.getLogger("AnnouncementDashboard")
@@ -19,6 +20,21 @@ async def snapshot(guild, bot):
     config = await store.get_settings(guild.id)
     cog = bot.get_cog("AnnouncementReactions") if bot else None
     ready = bool(cog and cog.workers and all(not task.done() for task in cog.workers))
+    image = await images.get_image(guild.id, config.get("line_image_id"))
+    reaction_statuses = [
+        {"channel_id": key, **store.inspect_configuration(guild, config, ready, key)}
+        for key in store.reaction_channels(config)
+    ]
+    status = next((item for item in reaction_statuses if item["code"] not in ("ready", "disabled")), None)
+    status = dict(status or store.inspect_configuration(guild, config, ready))
+    status["channels"] = reaction_statuses
+    line_statuses = [
+        {"channel_id": key, **store.inspect_line(guild, config, ready, bool(image), key)}
+        for key in config.get("line_channel_ids", [])
+    ]
+    line_status = next((item for item in line_statuses if item["code"] not in ("ready", "disabled")), None)
+    line_status = dict(line_status or store.inspect_line(guild, config, ready, bool(image)))
+    line_status["channels"] = line_statuses
     return {
         "config": config,
         "channels": [
@@ -31,7 +47,7 @@ async def snapshot(guild, bot):
              "usable": store.emoji_usable(emoji)}
             for emoji in guild.emojis
         ],
-        "status": store.inspect_configuration(guild, config, ready),
+        "status": status, "line_status": line_status, "line_image": image,
         "runtime": cog.runtime_status(guild.id) if cog else {"queue_size": 0, "dropped": 0},
     }
 
@@ -55,6 +71,10 @@ async def api_save(req):
     try:
         old = await store.get_settings(guild.id)
         changes, revision = store.validate_changes(guild, body, old)
+        if changes["line_image_id"] and not await images.get_image(guild.id, changes["line_image_id"]):
+            # A deleted/expired draft can be retained only while safely switching off.
+            if changes["line_enabled"] or changes["line_image_id"] != old.get("line_image_id"):
+                raise ValueError("الصورة غير موجودة في هذا السيرفر؛ ارفعها مجددًا.")
         config = await store.save_settings(guild.id, changes, revision)
         cog = ws.bot_ref.get_cog("AnnouncementReactions") if ws.bot_ref else None
         if cog:
@@ -78,3 +98,37 @@ async def api_save(req):
 def register_routes(routes):
     routes.get("/api/guild/{guild_id}/announcement-reactions")(api_get)
     routes.post("/api/guild/{guild_id}/announcement-reactions")(api_save)
+    routes.post("/api/guild/{guild_id}/announcement-reactions/image")(api_upload_image)
+    routes.get("/api/guild/{guild_id}/announcement-reactions/image/{image_id}")(api_get_image)
+
+
+async def api_upload_image(req):
+    ws = web_context()
+    _, guild = await ws.authorize(req, write=True, management_tier="admin")
+    if req.content_type not in ("image/png", "image/jpeg", "image/gif", "application/octet-stream"):
+        return web.json_response({"message": "الصيغ المقبولة PNG أو JPG أو GIF فقط."}, status=415)
+    if req.content_length and req.content_length > images.MAX_IMAGE_BYTES:
+        return web.json_response({"message": "حجم الصورة يتجاوز 2 ميجابايت."}, status=413)
+    payload = bytearray()
+    async for chunk in req.content.iter_chunked(65536):
+        payload.extend(chunk)
+        if len(payload) > images.MAX_IMAGE_BYTES:
+            return web.json_response({"message": "حجم الصورة يتجاوز 2 ميجابايت."}, status=413)
+    try:
+        image = await images.upload(guild.id, bytes(payload))
+        return web.json_response({"image": image})
+    except ValueError as error:
+        return web.json_response({"message": str(error)}, status=400)
+    except Exception:
+        logger.exception("Cannot upload separator guild=%s", guild.id)
+        return web.json_response({"message": "تعذر حفظ الصورة مؤقتًا؛ حاول مجددًا."}, status=503)
+
+
+async def api_get_image(req):
+    ws = web_context()
+    _, guild = await ws.authorize(req, management_tier="admin")
+    image = await images.get_image(guild.id, req.match_info["image_id"], include_payload=True)
+    if image is None:
+        raise web.HTTPNotFound()
+    return web.Response(body=image["payload"], content_type=image["mime"],
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"})

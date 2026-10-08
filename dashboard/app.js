@@ -9779,6 +9779,7 @@
       if (state.guild && window.PrimeAnnouncements) {
         state.announcementCleanup = window.PrimeAnnouncements.mount(host, {
           guildId: String(state.guild.id), api, writeApi, readJson, toast,
+          getCsrf: () => state.session?.csrf || "", refreshSession,
         });
       } else {
         host.append(el("p", { class: "notice", text: "اختر سيرفرًا لفتح المساحة الإعلانية." }));
