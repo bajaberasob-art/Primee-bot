@@ -77,7 +77,9 @@ async def upload_banner(guild_id, payload, content_type):
 
 
 def describe_channel(ch):
-    return {"id": str(ch.id), "name": ch.name}
+    return {"id": str(ch.id), "name": ch.name,
+            "category_id": str(ch.category_id) if getattr(ch, "category_id", None) else None,
+            "category_name": getattr(getattr(ch, "category", None), "name", "")}
 
 
 async def snapshot(guild, ws):
@@ -157,15 +159,29 @@ async def api_patch(req):
         cog = ws.bot_ref.get_cog("TempVoice") if ws.bot_ref else None
         if cog:
             cog.update_config(guild.id, new)
+            # Reconcile delegated visibility/control on each known room. Never
+            # modify unrelated rooms or override Discord's native permission checks.
             for room in list(cog.rooms.values()):
-                if room["guild_id"] == guild.id and room["state"].get("panel_message_id"):
+                if room["guild_id"] == guild.id:
                     channel = guild.get_channel(room["channel_id"])
                     if channel:
                         try:
-                            message = await channel.fetch_message(int(room["state"]["panel_message_id"]))
-                            await message.edit(view=__import__("temp_voice_panel").RoomPanel(cog, new))
+                            await cog.reconcile_room_permissions(channel, room, new)
+                            if room["state"].get("panel_message_id"):
+                                message = await channel.fetch_message(int(room["state"]["panel_message_id"]))
+                                await message.edit(embed=cog.embed(new, room["state"]),
+                                                   view=__import__("temp_voice_panel").RoomPanel(cog, new))
                         except Exception:
-                            log.warning("Could not refresh existing room controls guild=%s", guild.id, exc_info=True)
+                            log.warning("Could not refresh room settings guild=%s", guild.id, exc_info=True)
+            if new["panel_message_id"]:
+                try:
+                    await cog.publish_panel(guild, new)
+                    # Panel message IDs are configuration state; never apply an
+                    # implicit revision bump for this internally managed field.
+                    await store.save_config(guild.id, new, result["revision"])
+                except Exception:
+                    log.warning("Settings saved, but the Discord setup panel could not be refreshed guild=%s",
+                                guild.id, exc_info=True)
         return web.json_response(await snapshot(guild, ws))
     except store.Conflict as error:
         return web.json_response({"error": "conflict", "config": error.current["config"],
@@ -201,6 +217,8 @@ async def api_delete_room(req):
     except ValueError:
         raise web.HTTPNotFound()
     cog = ws.bot_ref.get_cog("TempVoice") if ws.bot_ref else None
+    if not cog:
+        return web.json_response({"message": "محرك الرومات غير جاهز."}, status=503)
     try:
         await cog.delete_room(guild, int(req.match_info["channel_id"]))
     except ValueError as error:

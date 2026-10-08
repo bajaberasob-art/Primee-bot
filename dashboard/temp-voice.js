@@ -322,10 +322,10 @@
         root.append(fault);
       }
       var cards = node("div", { class: "tv-stats" });
-      [["دقيقة صوتية إجمالاً", n.total_minutes, "◷"], ["رومات من البداية", n.rooms_created, "◧"],
-        ["بروفايلات محفوظة", n.saved_profiles, "▣"], ["رومات نشطة الآن", n.active_rooms, "◉"]]
+        [["دقيقة صوتية إجمالاً", n.total_minutes, "◷", "total_minutes"], ["رومات من البداية", n.rooms_created, "◧", "rooms_created"],
+        ["بروفايلات محفوظة", n.saved_profiles, "▣", "saved_profiles"], ["رومات نشطة الآن", n.active_rooms, "◉", "active_rooms"]]
         .forEach(function (x) { cards.append(node("article", { class: "tv-stat" },
-          node("span", { class: "tv-stat-icon", text: x[2] }), node("b", { text: Number(x[1] || 0).toLocaleString("en") }),
+          node("span", { class: "tv-stat-icon", text: x[2] }), node("b", { text: Number(x[1] || 0).toLocaleString("en"), "data-live-stat": x[3] }),
           node("small", { text: x[0] }))); });
       root.append(cards);
 
@@ -419,7 +419,7 @@
         leaderboard.append(line);
       });
       if (!(snap.leaderboard || []).length) leaderboard.append(node("p", { class: "tv-help", text: "لا توجد بيانات بعد." }));
-      var live = node("div", { class: "tv-room-list", "data-live-rooms": "" });
+      var live = node("div", { class: "tv-room-list tv-live-room-list", "data-live-rooms": "" });
       (snap.rooms || []).forEach(function (room) {
         var item = node("article", { class: "tv-live-room" },
           node("div", {}, node("b", { text: room.name }), node("p", { text: room.owner_name + " · " + room.members + " عضو" + (room.pinned ? " · مثبّت" : "") })),

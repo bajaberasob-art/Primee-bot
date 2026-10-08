@@ -481,10 +481,28 @@ class TempVoice(commands.Cog):
             await channel.set_permissions(old, overwrite=overwrite)
         overwrite = channel.overwrites_for(target)
         overwrite.view_channel = overwrite.connect = overwrite.send_messages = True
-        overwrite.manage_channels = cfg["owner_manage_channel"]
+        overwrite.manage_channels = bool(cfg["owner_manage_channel"])
         await channel.set_permissions(target, overwrite=overwrite)
         await self.tick(room)
         room["owner_id"] = target.id
+
+    async def reconcile_room_permissions(self, channel, room, cfg):
+        guild = channel.guild
+        old = self.configs.get(guild.id, {})
+        for role_id in set(old.get("admin_role_ids", [])) - set(cfg["admin_role_ids"]):
+            role = guild.get_role(int(role_id))
+            if role and role in channel.overwrites:
+                await channel.set_permissions(role, overwrite=None, reason="Temporary voice access updated")
+        for role_id in cfg["admin_role_ids"]:
+            role = guild.get_role(int(role_id))
+            if role:
+                await channel.set_permissions(role, view_channel=True, connect=True,
+                                              reason="Temporary voice administrator access")
+        owner = guild.get_member(room["owner_id"])
+        if owner:
+            overwrite = channel.overwrites_for(owner)
+            overwrite.manage_channels = bool(cfg["owner_manage_channel"])
+            await channel.set_permissions(owner, overwrite=overwrite)
 
     async def perform(self, actor, channel, room, cfg, action, value):
         guild, state = channel.guild, room["state"]
@@ -498,26 +516,26 @@ class TempVoice(commands.Cog):
             await channel.edit(user_limit=int(value))
         elif action in {"lock", "quick_lock", "unlock", "quick_unlock", "privacy", "emergency"}:
             overwrite = channel.overwrites_for(guild.default_role)
-            locked = action in {"lock", "quick_lock", "emergency"}
+            locked = action in {"lock", "quick_lock", "emergency"} and not (
+                action == "emergency" and state.get("emergency")
+            )
             if action == "privacy":
                 private = not (state.get("privacy", cfg["privacy"]) == "private")
                 state["privacy"] = "private" if private else "public"
                 overwrite.view_channel = overwrite.connect = not private
             else:
-                overwrite.connect = not locked
+                if action in {"quick_unlock", "unlock"}:
+                    overwrite.view_channel = state.get("privacy", cfg["privacy"]) == "public"
+                elif action != "emergency" or not state.get("emergency"):
+                    overwrite.view_channel = None
+                overwrite.connect = (
+                    (state.get("privacy", cfg["privacy"]) == "public" if action in {"quick_unlock", "unlock"} else True)
+                    if action == "emergency" and state.get("emergency")
+                    else (False if locked else (state.get("privacy", cfg["privacy"]) == "public" if action in {"quick_unlock", "unlock"} else None))
+                )
             await channel.set_permissions(guild.default_role, overwrite=overwrite)
             if action == "emergency":
-                # Explicit trusted/member allows also need revoking during an emergency.
-                for target, current in list(channel.overwrites.items()):
-                    if getattr(target, "id", None) in {room["owner_id"], guild.me.id}:
-                        continue
-                    if isinstance(target, discord.Role) and str(target.id) in cfg["admin_role_ids"]:
-                        continue
-                    if isinstance(target, discord.Member) and self.is_admin(target, cfg):
-                        continue
-                    current.connect = False
-                    await channel.set_permissions(target, overwrite=current)
-                state["emergency"] = True
+                state["emergency"] = not state.get("emergency", False)
         elif action in MEMBER_ACTIONS:
             target = guild.get_member(int(value)) if value and value.isdigit() else None
             if not target:
