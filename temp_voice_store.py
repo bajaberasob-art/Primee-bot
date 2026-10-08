@@ -150,6 +150,13 @@ def validate_patch(guild, body, old):
         if key == "button_settings":
             validate_button_settings(guild, value)
         config[key] = value
+    if config["enabled"]:
+        for key in ("category_id", "panel_channel_id", "creation_channel_id"):
+            if config[key] is None or not channel_valid(guild, key, config[key]):
+                raise ValueError("اختر الفئة وقناة اللوحة وقناة الإنشاء قبل تفعيل النظام.")
+        hub = guild.get_channel(int(config["creation_channel_id"]))
+        if hub.category_id != int(config["category_id"]):
+            raise ValueError("يجب أن تكون قناة الإنشاء داخل الفئة المحددة.")
     return config, revision
 
 
