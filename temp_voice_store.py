@@ -206,14 +206,15 @@ async def rooms(guild_id=None):
     return [{**dict(row), "state": json.loads(row["state"])} for row in rows]
 
 
-async def add_room(guild_id, channel_id, owner_id, state):
+async def add_room(guild_id, channel_id, owner_id, state, count_created=True):
     now = time.time()
     async with database.connect() as db:
         await db.execute("BEGIN IMMEDIATE")
         await db.execute("INSERT INTO temp_voice_rooms VALUES (?,?,?,?,?,?)",
                          (channel_id, guild_id, owner_id, json.dumps(state), now, now))
-        await db.execute("INSERT INTO temp_voice_stats(guild_id,user_id,rooms_created) VALUES (?,?,1) ON CONFLICT(guild_id,user_id) DO UPDATE SET rooms_created=rooms_created+1", (guild_id, owner_id))
-        await db.execute("INSERT INTO temp_voice_profiles(guild_id,user_id,last_created) VALUES (?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET last_created=excluded.last_created", (guild_id, owner_id, now))
+        if count_created:
+            await db.execute("INSERT INTO temp_voice_stats(guild_id,user_id,rooms_created) VALUES (?,?,1) ON CONFLICT(guild_id,user_id) DO UPDATE SET rooms_created=rooms_created+1", (guild_id, owner_id))
+            await db.execute("INSERT INTO temp_voice_profiles(guild_id,user_id,last_created) VALUES (?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET last_created=excluded.last_created", (guild_id, owner_id, now))
         await db.commit()
 
 

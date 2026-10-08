@@ -101,7 +101,7 @@ class TempVoice(commands.Cog):
                                 and any(e.title == "🎛️ تحكم برومك الصوتي" for e in message.embeds)):
                             owner = message.mentions[0]
                             state = {"trusted": [], "banned": [], "pinned": False, "panel_message_id": str(message.id)}
-                            await store.add_room(guild.id, ch.id, owner.id, state)
+                            await store.add_room(guild.id, ch.id, owner.id, state, count_created=False)
                             room = next(x for x in await store.rooms(guild.id) if x["channel_id"] == ch.id)
                             self.rooms[ch.id] = room
                             self.member_counts[ch.id] = self.humans(ch)
