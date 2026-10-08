@@ -395,6 +395,9 @@
         card.append(error);
       }
 
+      const layout = el("div", "prime-ai-general-layout");
+      const mainCol = el("div", "prime-ai-general-main");
+      const asideCol = el("aside", "prime-ai-general-aside");
       const statusRow = el("div", "prime-ai-status-row");
       const statusCopy = el("div", "prime-ai-status-copy");
       statusCopy.append(el("strong", "", "حالة المساعد"));
@@ -410,7 +413,7 @@
       const switchTrack = el("span", "prime-ai-switch-track");
       toggleLabel.append(toggle, switchTrack);
       statusRow.append(statusCopy, toggleLabel);
-      card.append(statusRow);
+      asideCol.append(statusRow);
 
       const promptField = el("div", "prime-ai-field");
       const promptLabel = el("label", "", "تعليمات النظام");
@@ -425,7 +428,7 @@
       prompt.disabled = state.settingsSaving;
       promptField.append(promptLabel, prompt);
       promptField.append(el("small", "prime-ai-help", "تضيف هذه التعليمات سياقاً للمحادثة ولا تستبدل أنظمة الخبرة أو السلاسل أو الاشتراكات."));
-      card.append(promptField);
+      mainCol.append(promptField);
 
       const settingsMeta = el("div", "prime-ai-meta");
       const provider = state.settings && state.settings.provider
@@ -433,7 +436,7 @@
         : "غير محدد";
       settingsMeta.append(el("span", "", `المزوّد: ${provider}`));
       settingsMeta.append(el("span", "", `آخر تحديث: ${readableDate(state.settings && state.settings.updated_at)}`));
-      card.append(settingsMeta);
+      asideCol.append(settingsMeta);
       const actions = el("div", "prime-ai-actions");
       actions.append(button(
         state.settingsSaving ? "جارٍ الحفظ..." : "حفظ الإعدادات",
@@ -450,7 +453,9 @@
             : "جارٍ تحميل سياسة الوصول الموحدة...",
         ));
       }
-      card.append(actions);
+      asideCol.append(actions);
+      layout.append(mainCol, asideCol);
+      card.append(layout);
       return card;
     }
 
@@ -478,6 +483,9 @@
         return card;
       }
 
+      const memLayout = el("div", "prime-ai-memory-layout");
+      const editorCol = el("div", "prime-ai-memory-editor");
+      const listCol = el("div", "prime-ai-memory-column");
       const form = el("form", "prime-ai-memory-form");
       form.dataset.form = "memory";
       const input = el("textarea", "prime-ai-textarea");
@@ -591,9 +599,9 @@
         details,
         formActions,
       );
-      card.append(form);
+      editorCol.append(form);
       if (!canCreateMemory && !state.editingMemory) {
-        card.append(el(
+        editorCol.append(el(
           "p",
           "prime-ai-warning",
           "إضافة ذكريات جديدة متوقفة في سياسة الذاكرة. يمكن متابعة مراجعة الذكريات الموجودة.",
@@ -603,9 +611,12 @@
         const error = el("div", "prime-ai-error");
         error.setAttribute("role", "alert");
         error.append(el("p", "", state.memoryError));
-        card.append(error);
+        editorCol.append(error);
       }
 
+      const listHead = el("div", "prime-ai-list-head");
+      listHead.append(el("strong", "", "الذكريات المحفوظة"), el("span", "prime-ai-count", String(state.memories.length)));
+      listCol.append(listHead);
       const list = el("div", "prime-ai-memory-list");
       if (!state.memories.length) {
         const empty = el("div", "prime-ai-empty");
@@ -617,21 +628,21 @@
           const item = el("article", "prime-ai-memory-item");
           const content = el("p", "prime-ai-memory-content", memory.content || "");
           const meta = el("div", "prime-ai-memory-meta");
-          meta.append(el("span", "", scopeLabel(memory)));
+          meta.append(el("span", "prime-ai-chip is-scope", scopeLabel(memory)));
           if (memory.source) {
             meta.append(el(
               "span",
-              "",
+              "prime-ai-chip",
               memory.source === "AI_CANDIDATE"
                 ? "مصدرها اقتراح وافق عليه المستخدم"
                 : "أضيفت إدارياً",
             ));
           }
           if (memory.pinned) {
-            meta.append(el("span", "", "مثبّتة — لا تنتهي"));
+            meta.append(el("span", "prime-ai-chip", "مثبّتة — لا تنتهي"));
           }
-          meta.append(el("span", "", memory.enabled === false || memory.enabled === 0 ? "متوقفة" : "مفعّلة"));
-          if (memory.expires_at) meta.append(el("span", "", `تنتهي ${readableDate(memory.expires_at)}`));
+          meta.append(el("span", memory.enabled === false || memory.enabled === 0 ? "prime-ai-chip is-paused" : "prime-ai-chip is-ok", memory.enabled === false || memory.enabled === 0 ? "متوقفة" : "مفعّلة"));
+          if (memory.expires_at) meta.append(el("span", "prime-ai-chip", `تنتهي ${readableDate(memory.expires_at)}`));
           meta.append(el("span", "", `أضافها ${memory.created_by || "غير معروف"}`));
           meta.append(el("time", "", readableDate(memory.created_at)));
           const edit = button(
@@ -654,7 +665,9 @@
           list.append(item);
         });
       }
-      card.append(list);
+      listCol.append(list);
+      memLayout.append(editorCol, listCol);
+      card.append(memLayout);
       return card;
     }
 
@@ -685,15 +698,22 @@
         state.testing,
       ));
       form.append(label, prompt, actions);
-      card.append(form);
-
-      if (state.testResult) {
+      const lab = el("div", "prime-ai-lab");
+      const consolePane = el("div", "prime-ai-console");
+      consolePane.append(el("span", "prime-ai-console-title", "مخرجات الاختبار"));
+      if (state.testing) {
+        consolePane.append(el("p", "prime-ai-console-idle", "جارٍ انتظار رد PRIME..."));
+      } else if (state.testResult) {
         const result = el("div", state.testResult.ok ? "prime-ai-test-result" : "prime-ai-error");
         result.setAttribute("role", state.testResult.ok ? "status" : "alert");
         result.append(el("strong", "", state.testResult.ok ? "نتيجة الاختبار" : "تعذر إكمال الاختبار"));
         result.append(el("p", "", state.testResult.text));
-        card.append(result);
+        consolePane.append(result);
+      } else {
+        consolePane.append(el("p", "prime-ai-console-idle", "لم يُشغَّل أي اختبار بعد. ستظهر الإجابة هنا."));
       }
+      lab.append(form, consolePane);
+      card.append(lab);
       return card;
     }
 
@@ -729,7 +749,10 @@
         return card;
       }
 
-      const list = el("div", "prime-ai-audit-list");
+      const summary = el("div", "prime-ai-audit-summary");
+      summary.append(el("span", "prime-ai-count", String(state.events.length)), el("span", "", "حدث مسجل — الأحدث أولاً"));
+      card.append(summary);
+      const list = el("div", "prime-ai-audit-list prime-ai-timeline");
       state.events.forEach((event) => {
         const row = el("article", "prime-ai-audit-item");
         const top = el("div", "prime-ai-audit-top");
@@ -737,7 +760,7 @@
         top.append(el("time", "", readableDate(event.created_at)));
         const meta = el("div", "prime-ai-audit-meta");
         meta.append(el("span", "", `المنفّذ: ${event.actor_id || "غير معروف"}`));
-        meta.append(el("span", "prime-ai-audit-result", event.result || "غير محدد"));
+        meta.append(el("span", "prime-ai-chip prime-ai-audit-result", event.result || "غير محدد"));
         row.append(top, el("p", "", event.detail || "لا توجد تفاصيل إضافية."), meta);
         list.append(row);
       });
@@ -748,11 +771,22 @@
     function renderControlCard(destination) {
       const card = el("section", "prime-ai-card prime-ai-control-panel");
       const controlSections = [];
-      card.append(sectionHeader(
-        "مركز التحكم",
-        "إعدادات هذا القسم محفوظة ضمن مراجعة مركز التحكم الحالية.",
-        "prime-ai-control-title",
-      ));
+      const controlTitles = {
+        talk: ["قناة Talk وسلوكها", "حدد أين يتحدث PRIME ومن يستطيع مخاطبته وكيف تُضبط حدود الرسائل."],
+        context: ["السياق والمراجع", "ما يراه PRIME من الرسائل المقتبسة والسياق المؤقت قبل أن يرد."],
+        personality: ["شخصية PRIME", "اضبط النبرة والطول ومستوى الرسمية؛ التغييرات تُحفظ ضمن مراجعة واحدة."],
+        personas: ["استثناءات القنوات والرتب", "شخصية مخصصة تتجاوز الإعداد العام لقناة أو رتبة بعينها."],
+        responses: ["تنسيق الردود", "طريقة الذكر والتنسيق والحذف التلقائي لردود PRIME."],
+        modes: ["الأنماط وطرق التفعيل", "اختر ما يستطيع PRIME فعله وكيف يُستدعى."],
+        memory: ["سياسة الذاكرة", "ما يُسمح لـ PRIME بتذكره ومدة الاحتفاظ به."],
+        permissions: ["الوصول والصلاحيات", "القنوات والرتب المسموح لها، وصلاحيات تنفيذ الإجراءات."],
+        moderation: ["الإشراف", "تصنيف التنبيهات وحدود المراجعة قبل أي تدخل."],
+        providers: ["المزوّد", "حالة مزوّد الذكاء الاصطناعي المعتمد لهذا الخادم."],
+        limits: ["الحدود والاحتفاظ", "حدود الاستخدام ومدد الاحتفاظ بالبيانات."],
+      };
+      const controlTitle = controlTitles[destination] || ["مركز التحكم", "إعدادات هذا القسم محفوظة ضمن مراجعة مركز التحكم الحالية."];
+      card.dataset.destination = destination;
+      card.append(sectionHeader(controlTitle[0], controlTitle[1], "prime-ai-control-title"));
       if (state.controlLoading && !state.controlSnapshot) {
         card.append(loadingCard("جارٍ تحميل مركز التحكم"));
         return card;
@@ -1388,6 +1422,16 @@
       personaSection.content.append(personaActions);
       addControlSection("talk", personaSection);
 
+      // Dedicated destinations share the same draft/fields as Talk; they must
+      // not be empty pages or introduce duplicate underlying configuration.
+      [
+        ["permissions", accessSection],
+        ["context", contextSection],
+        ["personality", personalitySection],
+        ["personas", personaSection],
+        ["responses", responseSection],
+      ].forEach(([key, section]) => addControlSection(key, section));
+
       controlSections
         .filter((section) => section.key === destination)
         .forEach((section) => {
@@ -1429,11 +1473,17 @@
         const skills = state.skills.filter((skill) => skill.category === category);
         if (!skills.length) return;
         const group = el("section", "prime-ai-skill-group");
-        group.append(sectionHeader(categoryLabels[category] || category, "", `prime-ai-skills-${category.toLowerCase()}`));
+        const groupHead = sectionHeader(categoryLabels[category] || category, "", `prime-ai-skills-${category.toLowerCase()}`);
+        groupHead.append(el("span", "prime-ai-count", String(skills.length)));
+        group.append(groupHead);
+        const skillGrid = el("div", "prime-ai-skill-grid");
+        group.append(skillGrid);
         skills.forEach((skill) => {
           const draft = state.skillDrafts[skill.key] || skill;
           const section = el("article", "prime-ai-skill-card");
-          section.append(el("div", "prime-ai-skill-title", skill.name));
+          const skillHead = el("div", "prime-ai-skill-head");
+          skillHead.append(el("div", "prime-ai-skill-title", skill.name), el("span", skill.available ? "prime-ai-chip is-ok" : "prime-ai-chip is-paused", skill.available ? "متاحة" : "غير متاحة"));
+          section.append(skillHead);
           section.append(el(
             "p",
             "prime-ai-help",
@@ -1445,21 +1495,24 @@
             "prime-ai-help",
             `${skill.available ? "متاحة" : "غير متاحة"} · الصلاحية: ${permission ? permission.label : draft.required_permission || "غير محددة"}`,
           ));
+          const limits = el("div", "prime-ai-skill-limits");
+          limits.append(el("span", "prime-ai-skill-limits-title", "قيود الاستخدام"));
           const grid = el("div", "prime-ai-control-grid");
           const enabled = controlToggle(`skill.${skill.key}.enabled`, "تفعيل المهارة", draft.enabled);
           if (!skill.available) {
             const toggle = enabled.querySelector("input");
             if (toggle) toggle.disabled = true;
           }
+          section.append(enabled);
           grid.append(
-            enabled,
             controlSelect(`skill.${skill.key}.required_permission`, "أقل صلاحية", draft.required_permission, permissions),
             controlSelect(`skill.${skill.key}.allowed_channels`, "قنوات المهارة", draft.allowed_channels, channels, true),
             controlSelect(`skill.${skill.key}.allowed_roles`, "رتب المهارة", draft.allowed_roles, roles, true),
             controlInput(`skill.${skill.key}.rate_limit.limit`, "حد الطلبات", draft.rate_limit && draft.rate_limit.limit, { type: "number", min: 1, max: 10000, step: 1 }),
             controlInput(`skill.${skill.key}.rate_limit.window_seconds`, "نافذة الحد بالثواني", draft.rate_limit && draft.rate_limit.window_seconds, { type: "number", min: 1, max: 86400, step: 1 }),
           );
-          section.append(grid);
+          limits.append(grid);
+          section.append(limits);
           if (state.skillErrors[skill.key]) {
             const error = el("p", "prime-ai-error-text", state.skillErrors[skill.key]);
             error.setAttribute("role", "alert");
@@ -1467,7 +1520,7 @@
           }
           section.append(button("حفظ المهارة", "save-skill", "prime-ai-button prime-ai-button-secondary", state.skillSaving === skill.key || !skill.available));
           section.querySelector("[data-action='save-skill']").dataset.skillKey = skill.key;
-          group.append(section);
+          skillGrid.append(section);
         });
         card.append(group);
       });
@@ -1499,11 +1552,16 @@
         ["طلبات الإجراءات", state.analytics && state.analytics.actions || 0],
         ["أحداث الإشراف", state.analytics && state.analytics.moderation_events || 0],
       ].forEach(([label, value]) => {
-        const item = el("div", "prime-ai-stat");
+        const item = el("div", label === "الفاشلة" && Number(value) > 0 ? "prime-ai-stat is-bad" : "prime-ai-stat");
         item.append(el("span", "", label), el("strong", "", value));
         statGrid.append(item);
       });
       stats.append(statGrid);
+      if (!state.analyticsLoading && !state.analyticsError && !totals.requests) {
+        const idle = el("div", "prime-ai-empty");
+        idle.append(el("strong", "", "لا توجد بيانات استخدام بعد"), el("span", "", "ستتشكل المؤشرات والتوزيعات عند أول طلب إلى PRIME AI."));
+        stats.append(idle);
+      }
       const breakdowns = [
         ["الطلبات حسب المهارة", state.analytics && state.analytics.skills, "skill"],
         ["الطلبات حسب القناة", state.analytics && state.analytics.channels, "channel_id"],
@@ -1513,9 +1571,14 @@
         if (!Array.isArray(rows) || !rows.length) return;
         const breakdown = el("div", "prime-ai-analytics-breakdown");
         breakdown.append(el("h3", "", title));
+        const peak = Math.max(1, ...rows.map((entry) => Number(entry.requests) || 0));
         rows.forEach((item) => {
           const row = el("div", "prime-ai-analytics-row");
           row.append(el("span", "", item[nameKey] || "غير محدد"));
+          const bar = el("span", "prime-ai-bar");
+          bar.setAttribute("aria-hidden", "true");
+          bar.style.setProperty("--share", `${Math.round(((Number(item.requests) || 0) / peak) * 100)}%`);
+          row.append(bar);
           row.append(el("strong", "", item.requests || 0));
           breakdown.append(row);
         });
@@ -1547,6 +1610,11 @@
       });
       heading.append(primaryActions);
       card.append(heading);
+      const overviewLayout = el("div", "prime-ai-overview-layout");
+      const setupCol = el("div", "prime-ai-overview-setup");
+      const boardCol = el("div", "prime-ai-overview-side");
+      overviewLayout.append(setupCol, boardCol);
+      card.append(overviewLayout);
       const cfg = state.controlSnapshot && state.controlSnapshot.config
         ? state.controlSnapshot.config
         : {};
@@ -1578,17 +1646,21 @@
         ["الذاكرة", state.controlLoaded ? memory.enabled ? "مفعّلة" : "متوقفة" : "جارٍ التحميل"],
         ["نشاط آخر 30 يوماً", analyticsText],
       ];
-      const grid = el("div", "prime-ai-stat-grid");
+      const grid = el("div", "prime-ai-board");
       values.forEach(([label, value]) => {
         const item = el("div", "prime-ai-stat");
         item.append(el("span", "", label), el("strong", "", value));
         grid.append(item);
       });
-      card.append(grid);
+      boardCol.append(grid);
 
       const readiness = el("section", "prime-ai-readiness");
       readiness.append(el("h3", "", "الإعداد الأساسي"));
       readiness.append(el("p", "prime-ai-help", "تحقق من هذه النقاط قبل تفعيل PRIME AI في خادمك."));
+      const meterWrap = el("div", "prime-ai-meter");
+      const meterBar = el("span", "prime-ai-meter-bar");
+      meterWrap.append(meterBar);
+      readiness.append(meterWrap);
       const readinessItems = [
         {
           label: "المساعد",
@@ -1636,7 +1708,14 @@
         readinessList.append(row);
       });
       readiness.append(readinessList);
-      card.append(readiness);
+      const readyCount = readinessItems.filter((item) => item.ready).length;
+      meterWrap.setAttribute("role", "progressbar");
+      meterWrap.setAttribute("aria-label", "جاهزية الإعداد");
+      meterWrap.setAttribute("aria-valuemin", "0");
+      meterWrap.setAttribute("aria-valuemax", String(readinessItems.length));
+      meterWrap.setAttribute("aria-valuenow", String(readyCount));
+      meterBar.style.setProperty("--share", `${Math.round((readyCount / readinessItems.length) * 100)}%`);
+      setupCol.append(readiness);
 
       const quick = el("section", "prime-ai-quick-config");
       quick.append(el("h3", "", "إدارة PRIME AI"));
@@ -1678,7 +1757,7 @@
       } else {
         recent.append(el("p", "prime-ai-muted", "لا توجد أحداث مسجلة."));
       }
-      card.append(recent);
+      boardCol.append(recent);
       return card;
     }
 
@@ -1743,12 +1822,16 @@
         state.sandboxRunning || channels.length === 0,
       ));
       form.append(channelLabel, channel, promptLabel, prompt, actions);
-      card.append(form);
+      const lab = el("div", "prime-ai-lab");
+      const consolePane = el("div", "prime-ai-console");
+      consolePane.append(el("span", "prime-ai-console-title", "خطة المعاينة"));
+      lab.append(form, consolePane);
+      card.append(lab);
 
       if (state.sandboxError) {
         const error = el("p", "prime-ai-error-text", state.sandboxError);
         error.setAttribute("role", "alert");
-        card.append(error);
+        consolePane.append(error);
       }
       if (state.sandboxResult) {
         const result = el("div", "prime-ai-test-result");
@@ -1802,7 +1885,10 @@
         } else {
           result.append(el("p", "", "لم تُنشأ خطوات إجراء. راجع التوضيح أو الإعدادات المحفوظة."));
         }
-        card.append(result);
+        consolePane.append(result);
+      }
+      if (!state.sandboxResult && !state.sandboxError) {
+        consolePane.append(el("p", "prime-ai-console-idle", state.sandboxRunning ? "جارٍ إنشاء الخطة..." : "اكتب طلباً لترى الخطوات وفحوص الصلاحية قبل أي تنفيذ."));
       }
       return card;
     }
@@ -1818,15 +1904,20 @@
       ));
       card.append(heading);
       if (state.operationsError) card.append(loadError(state.operationsError, "reload-operations"));
-      const list = el("div", "prime-ai-audit-list");
+      const list = el("div", "prime-ai-audit-list prime-ai-timeline");
       if (state.operationsLoading && !state.operations.length) {
         list.append(loadingCard("جارٍ تحميل طلبات الإجراءات"));
       } else if (!state.operations.length) {
-        list.append(el("p", "prime-ai-muted", "لا توجد طلبات إجراءات."));
+        const empty = el("div", "prime-ai-empty");
+        empty.append(el("strong", "", "لا توجد طلبات إجراءات"));
+        empty.append(el("span", "", "ستظهر هنا طلبات PRIME ونتائج تنفيذها بعد أول طلب."));
+        list.append(empty);
       }
       state.operations.forEach((item) => {
         const row = el("article", "prime-ai-audit-item");
-        row.append(el("strong", "", `${item.status} · ${item.skill || "PRIME AI"}`));
+        const opTop = el("div", "prime-ai-audit-top");
+        opTop.append(el("strong", "", item.skill || "PRIME AI"), el("span", "prime-ai-chip", item.status));
+        row.append(opTop);
         row.append(el("p", "", item.request || "طلب بلا نص."));
         row.append(el("small", "prime-ai-help", `${(item.tools || []).join("، ")} · ${readableDate(item.created_at)}`));
         if (item.execution_result) row.append(el("p", "", `النتيجة: ${item.execution_result}`));
@@ -1835,6 +1926,41 @@
       });
       card.append(list);
       return card;
+    }
+
+    // Optional Magic UI enhancement: loaded lazily, never required by controls.
+    const islandHosts = new Set();
+    const islandBridge = () => window.PrimeAIMagic && typeof window.PrimeAIMagic.mount === "function" ? window.PrimeAIMagic : null;
+    function disposeIslands() {
+      const bridge = islandBridge();
+      islandHosts.forEach((host) => { if (bridge) bridge.dispose(host); });
+      islandHosts.clear();
+    }
+    function mountIslands() {
+      const bridge = islandBridge();
+      if (!bridge || state.disposed) return;
+      container.querySelectorAll("[data-island-stats]").forEach((host) => {
+        try {
+          bridge.mount(host, { stats: JSON.parse(host.dataset.islandStats), active: host.dataset.islandActive === "1" });
+          islandHosts.add(host);
+        } catch (_) {
+          // Static tiles remain visible when the enhancement fails.
+        }
+      });
+    }
+    function loadIslandScript() {
+      if (islandBridge() || config.standalone) return;
+      const existing = document.querySelector("script[data-prime-ai-island]");
+      if (existing) { existing.addEventListener("load", mountIslands, { once: true }); return; }
+      const own = document.querySelector("script[src*=\"ai-control.js\"]");
+      const src = own ? own.src.replace(/ai-control\.js/, "ai-magic-island.js") : "static/ai-magic-island.js";
+      const script = document.createElement("script");
+      script.src = src;
+      script.async = true;
+      script.dataset.primeAiIsland = "1";
+      script.addEventListener("load", () => { if (!state.disposed) mountIslands(); }, { once: true });
+      script.addEventListener("error", () => script.remove(), { once: true });
+      document.head.append(script);
     }
 
     function render() {
@@ -1913,11 +2039,13 @@
         destinations[0];
       state.activeDestination = active.id;
       const activeGroup = groups.find((group) => group.destinations.some((item) => item.id === active.id));
-      const intro = el("header", "prime-ai-hero");
+      page.dataset.group = activeGroup.id;
+      page.dataset.destination = active.id;
+      const intro = el("header", "prime-ai-masthead");
       const identity = el("div", "prime-ai-identity");
-      identity.append(el("span", "prime-ai-eyebrow", "PRIME AI CONTROL CENTER"));
-      identity.append(el("h1", "", "PRIME AI"));
-      identity.append(el("p", "", "مركز تحكم الذكاء الاصطناعي لخادمك."));
+      identity.append(el("span", "prime-ai-eyebrow", "PRIME AI"));
+      identity.append(el("h1", "", config.standalone ? "Talk" : "مساحة تشغيل الذكاء الاصطناعي"));
+      identity.append(el("p", "", "الشخصية والمعرفة والإجراءات تحت صلاحيات واضحة، في مكان واحد."));
       const badgeStatus = state.settingsLoading
         ? "جارٍ التحقق"
         : state.settings
@@ -1929,7 +2057,28 @@
       );
       badge.append(el("span", "prime-ai-status-dot"));
       badge.append(document.createTextNode(badgeStatus));
-      intro.append(identity, badge);
+      const mastTop = el("div", "prime-ai-masthead-top");
+      mastTop.append(identity, badge);
+      intro.append(mastTop);
+      if (!config.standalone) {
+        const islandStats = [
+          { id: "skills", label: "مهارات مفعّلة", value: state.skills.filter((s) => s.available && s.enabled).length },
+          { id: "memories", label: "ذكريات محفوظة", value: state.memories.length },
+          { id: "channels", label: "قنوات مسموحة", value: state.allowedChannels.length },
+          { id: "events", label: "أحداث مسجلة", value: state.events.length },
+        ];
+        const strip = el("div", "prime-ai-island-host");
+        strip.setAttribute("role", "list");
+        islandStats.forEach((stat) => {
+          const tile = el("div", "prime-ai-island-tile");
+          tile.setAttribute("role", "listitem");
+          tile.append(el("span", "prime-ai-island-label", stat.label), el("strong", "prime-ai-island-value", String(stat.value)));
+          strip.append(tile);
+        });
+        strip.dataset.islandStats = JSON.stringify(islandStats);
+        strip.dataset.islandActive = state.settings && state.enabled ? "1" : "0";
+        intro.append(strip);
+      }
       page.append(intro);
 
       const notice = el("aside", "prime-ai-notice");
@@ -1945,37 +2094,39 @@
         "",
         `يعمل المساعد بجانب أنظمة PRIME الأخرى. تُرسل الرسائل الموجّهة إلى PRIME والسياق المحدود المسموح به إلى Google Gemini. ${retentionCopy} لا يجمع PRIME سجل القناة بالكامل، والذاكرة المنفصلة تخضع لإعداداتها الخاصة.`,
       ));
-      page.append(notice);
 
       const workspace = el(
         "div",
         `prime-ai-workspace${config.standalone ? " prime-ai-workspace-standalone" : ""}`,
       );
-      const nav = el("nav", "prime-ai-sidebar");
+      const nav = el("nav", "prime-ai-nav");
       nav.setAttribute("aria-label", "أقسام PRIME AI");
-      nav.append(el("span", "prime-ai-sidebar-title", "مركز التحكم"));
-      groups.forEach((group) => {
-        const groupOpen = group.id === activeGroup.id;
-        const section = el("details", "prime-ai-nav-group");
-        section.open = groupOpen;
-        const summary = el("summary", "prime-ai-nav-group-title");
-        summary.append(el("span", "", group.label));
-        summary.append(el("span", "prime-ai-nav-caret", "⌄"));
-        section.append(summary);
-        const links = el("div", "prime-ai-nav-links");
-        group.destinations.forEach((destination) => {
-          const link = button(
-            destination.label,
-            "navigate-destination",
-            `prime-ai-nav-button${destination.id === active.id ? " is-active" : ""}`,
-          );
-          link.dataset.destination = destination.id;
-          link.setAttribute("aria-current", destination.id === active.id ? "page" : "false");
-          links.append(link);
-        });
-        section.append(links);
-        nav.append(section);
+      const tabs = el("div", "prime-ai-tabs");
+      groups.forEach((group, index) => {
+        const tab = button(
+          group.label,
+          "navigate-destination",
+          `prime-ai-tab${group.id === activeGroup.id ? " is-active" : ""}`,
+        );
+        tab.dataset.destination = group.id === activeGroup.id ? active.id : group.destinations[0].id;
+        tab.dataset.group = group.id;
+        tab.setAttribute("aria-current", group.id === activeGroup.id ? "true" : "false");
+        tab.prepend(el("span", "prime-ai-tab-index", String(index + 1)));
+        tabs.append(tab);
       });
+      const chips = el("div", "prime-ai-chips");
+      activeGroup.destinations.forEach((destination) => {
+        const link = button(
+          destination.label,
+          "navigate-destination",
+          `prime-ai-nav-button${destination.id === active.id ? " is-active" : ""}`,
+        );
+        link.dataset.destination = destination.id;
+        link.setAttribute("aria-current", destination.id === active.id ? "page" : "false");
+        chips.append(link);
+      });
+      if (groups.length > 1) nav.append(tabs);
+      if (activeGroup.destinations.length > 1) nav.append(chips);
       const content = el("main", "prime-ai-content");
       const pageHeading = el("header", "prime-ai-page-title");
       pageHeading.append(el("h2", "", active.label));
@@ -2024,7 +2175,10 @@
         default:
           content.append(renderOverviewCard());
       }
-      if (!config.standalone) workspace.append(nav);
+      const rail = el("aside", "prime-ai-rail");
+      rail.append(notice);
+      content.append(rail);
+      if (!config.standalone) page.append(nav);
       workspace.append(content);
       page.append(workspace);
       const saveDock = el("aside", "prime-ai-save-dock");
@@ -2039,7 +2193,9 @@
       );
       saveDock.append(saveStatus, saveActions);
       page.append(saveDock);
+      disposeIslands();
       container.replaceChildren(page);
+      mountIslands();
       syncSaveDock();
     }
 
@@ -2699,12 +2855,14 @@
     container.addEventListener("click", onClick);
     container.addEventListener("submit", onSubmit);
     render();
+    loadIslandScript();
     loadSettings();
     loadControl();
     loadAudit();
 
     return function cleanup() {
       state.disposed = true;
+      disposeIslands();
       container.removeEventListener("input", onInput);
       container.removeEventListener("change", onChange);
       container.removeEventListener("click", onClick);

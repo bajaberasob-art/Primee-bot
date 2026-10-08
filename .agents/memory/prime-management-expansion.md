@@ -9,6 +9,12 @@ Internal PRIME AI reorganization is allowed, including moving, merging and split
 
 **How to apply:** Treat existing integration interfaces and behavioral tests as compatibility boundaries. Fix internal performance/lifecycle defects without redesigning the UI, changing prompts or introducing new product behavior.
 
+The AI dashboard presentation may be radically redesigned; the previous UI-preservation restriction applied to the internal refactor, not to a separately requested redesign.
+
+**Why:** The owner explicitly requested a complete creative, professional AI dashboard redesign using Magic UI on 2026-10-08.
+
+**How to apply:** Keep changes scoped to AI/Talk surfaces and preserve their working controls, permission gates, save/conflict handling and stored data. Do not redesign unrelated dashboard destinations without a request.
+
 The owner chose a per-server PRIME role map for Admin, Moderator, and Staff. Detect the server owner and Discord Administrator from Discord itself. An empty map preserves current behavior; a configured map only adds restrictions and never bypasses Discord permissions, server policy, or actor/target/bot role-hierarchy checks.
 
 **Why:** The project owner explicitly required that current systems and stored data remain intact and that enhancements not break existing features.

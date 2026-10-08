@@ -22,6 +22,7 @@ def main() -> int:
                 "tests.test_prime_ai",
                 "tests.test_prime_ai_intelligence",
                 "tests.test_prime_ai_internals",
+                "tests.test_prime_ai_dashboard_assets",
             ])
             result = unittest.TextTestRunner(verbosity=1).run(suite)
             return 0 if result.wasSuccessful() else 1

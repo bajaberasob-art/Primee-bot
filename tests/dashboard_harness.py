@@ -114,6 +114,9 @@ class FakeBot:
         def is_locked(self, guild_id):
             return self.locked
 
+        def get_lockdown_exemptions(self, guild_id):
+            return []
+
         async def emergency_lockdown(self, guild_id, locked):
             self.locked = locked
             return {"queued": True, "channels": len(CHANNELS), "locked": locked}
